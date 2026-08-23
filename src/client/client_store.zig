@@ -93,6 +93,13 @@ pub const Store = struct {
         return store.totalBulletinPages(&self.db, page_size);
     }
 
+    /// Returns all cached bulletin summaries sorted newest-first. The caller
+    /// owns the returned slice and the titles inside it. Used by the Bulletins
+    /// screen to render a scrollable list of every cached bulletin.
+    pub fn listAll(self: *Store) ![]store.BulletinSummary {
+        return store.listAllBulletins(&self.db, self.allocator);
+    }
+
     // -----------------------------------------------------------------------
     // Bulletin responses (shared schema) — cache of responses learned from
     // the server. The client stores them by their server-assigned

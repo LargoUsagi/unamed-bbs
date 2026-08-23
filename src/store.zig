@@ -375,6 +375,18 @@ pub fn listBulletinPage(
     return try stmt.all(BulletinSummary, allocator, .{}, .{ limit, offset });
 }
 
+/// Returns all bulletin summaries sorted by `created_at` descending (newest
+/// first). The caller owns the returned slice and the titles inside it.
+/// Used by the client Bulletins screen to render a scrollable list of every
+/// cached bulletin, rather than a single fixed-size page.
+pub fn listAllBulletins(db: *sqlite.Db, allocator: std.mem.Allocator) ![]BulletinSummary {
+    var stmt = try db.prepare(
+        "SELECT id, user_id, title FROM bulletins ORDER BY created_at DESC, id DESC",
+    );
+    defer stmt.deinit();
+    return try stmt.all(BulletinSummary, allocator, .{}, .{});
+}
+
 /// Total number of pages given a page size.
 pub fn totalBulletinPages(db: *sqlite.Db, page_size: u8) u16 {
     if (page_size == 0) return 0;
@@ -687,6 +699,40 @@ test "shared addBulletin and countBulletins" {
     const id1 = try addBulletin(&db, 1, 100, "First", &.{ 0x01, 0x02 });
     try std.testing.expectEqual(@as(u32, 1), id1);
     try std.testing.expectEqual(@as(usize, 1), countBulletins(&db));
+}
+
+test "shared listAllBulletins returns summaries sorted newest-first" {
+    const allocator = std.testing.allocator;
+    var db = sqlite.Db.init(.{
+        .mode = sqlite.Db.Mode{ .Memory = {} },
+        .open_flags = .{ .write = true, .create = true },
+        .threading_mode = .MultiThread,
+    }) catch unreachable;
+    defer db.deinit();
+    createSchema(&db);
+
+    try std.testing.expectEqual(@as(usize, 0), (try listAllBulletins(&db, allocator)).len);
+    {
+        const summaries = try listAllBulletins(&db, allocator);
+        defer allocator.free(summaries);
+    }
+
+    // created_at ascending: older first inserted, but the query returns
+    // newest-first, so the highest created_at comes first.
+    _ = try addBulletin(&db, 1, 100, "Oldest", &.{});
+    _ = try addBulletin(&db, 2, 200, "Middle", &.{});
+    _ = try addBulletin(&db, 3, 300, "Newest", &.{});
+
+    const summaries = try listAllBulletins(&db, allocator);
+    defer {
+        for (summaries) |s| allocator.free(@constCast(s.title));
+        allocator.free(summaries);
+    }
+    try std.testing.expectEqual(@as(usize, 3), summaries.len);
+    // Sorted by created_at DESC, id DESC — newest inserted (created_at 300) first.
+    try std.testing.expectEqualStrings("Newest", summaries[0].title);
+    try std.testing.expectEqualStrings("Middle", summaries[1].title);
+    try std.testing.expectEqualStrings("Oldest", summaries[2].title);
 }
 
 test "shared addUser and getUserByHandle" {
