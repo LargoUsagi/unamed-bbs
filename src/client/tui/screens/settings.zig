@@ -190,7 +190,7 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     _ = ptr;
     const ctx = state.ctx;
     const mgr = &ctx.connection;
-    const styled_conn = try render.renderConnIndicator(alloc, mgr.isConnected());
+    const styled_conn = try render.renderConnIndicator(alloc, mgr.isConnected(), mgr.active_kind);
     const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
 
     // --- Tab strip ---

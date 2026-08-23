@@ -120,12 +120,44 @@ pub const ConnectionManager = struct {
 /// endpoint or the DB has a previously-saved `tc_connect_uri`.
 pub fn init(mgr: *ConnectionManager, allocator: std.mem.Allocator, store: *@import("../client_store.zig").Store, overrides: cli.TuiOverrides) void {
     // --- Determine the connect endpoint: CLI > DB > none ---
+    // `saved_uri` (when the endpoint comes from the DB) owns the backing
+    // memory for the parsed `ep.host` slice. We immediately dup `host` into
+    // `host_copy` (allocated with the same allocator the TextInputs use) so
+    // the host string is independently owned and clearly valid for the
+    // `setValue` calls below — regardless of the lifetime of `saved_uri`.
+    var saved_uri: ?[]u8 = null;
+    defer if (saved_uri) |su| store.allocator.free(su);
+
+    var host_copy: ?[]u8 = null;
+    defer if (host_copy) |hc| allocator.free(hc);
+
     const connect_ep: ?endpoint.TransportEndpoint = blk: {
-        if (overrides.connect) |ep| break :blk ep;
+        if (overrides.connect) |ep| {
+            // CLI endpoint: host points into argv (process-lifetime), so dup
+            // it to guarantee it survives independently.
+            host_copy = allocator.dupe(u8, ep.host) catch null;
+            if (host_copy) |hc| break :blk .{
+                .kind = ep.kind,
+                .host = hc,
+                .port = ep.port,
+                .kport = ep.kport,
+            };
+            break :blk ep;
+        }
         // Fall back to the saved connect URI in the DB.
-        if (store.getConnectUri()) |saved_uri| {
-            defer store.allocator.free(saved_uri);
-            break :blk endpoint.parseEndpoint(saved_uri) catch null;
+        if (store.getConnectUri()) |uri| {
+            saved_uri = uri;
+            const parsed = endpoint.parseEndpoint(uri) catch null;
+            if (parsed) |ep| {
+                host_copy = allocator.dupe(u8, ep.host) catch null;
+                if (host_copy) |hc| break :blk .{
+                    .kind = ep.kind,
+                    .host = hc,
+                    .port = ep.port,
+                    .kport = ep.kport,
+                };
+            }
+            break :blk parsed;
         }
         break :blk null;
     };
@@ -538,4 +570,55 @@ fn saveConnectUri(store: *@import("../client_store.zig").Store, ep: endpoint.Tra
     } else {
         store.setConnectUri(uri) catch {};
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const client_store = @import("../client_store.zig");
+
+test "ConnectionManager.init restores TCP host from DB without corruption" {
+    const allocator = std.testing.allocator;
+
+    var store = client_store.Store.init(allocator);
+    defer store.deinit();
+    try store.setConnectUri("tcp://10.10.2.198:9000");
+
+    var mgr: ConnectionManager = undefined;
+    init(&mgr, allocator, &store, .{});
+    defer {
+        mgr.host_input.deinit();
+        mgr.port_input.deinit();
+        mgr.kport_input.deinit();
+        mgr.tcp_host_input.deinit();
+        mgr.tcp_port_input.deinit();
+        mgr.callsign_input.deinit();
+    }
+
+    try std.testing.expectEqualStrings("10.10.2.198", mgr.tcp_host_input.value.items);
+    try std.testing.expectEqualStrings("9000", mgr.tcp_port_input.value.items);
+}
+
+test "ConnectionManager.init restores AGWPE host from DB without corruption" {
+    const allocator = std.testing.allocator;
+
+    var store = client_store.Store.init(allocator);
+    defer store.deinit();
+    try store.setConnectUri("agwpe://10.10.2.114:8000:0");
+
+    var mgr: ConnectionManager = undefined;
+    init(&mgr, allocator, &store, .{});
+    defer {
+        mgr.host_input.deinit();
+        mgr.port_input.deinit();
+        mgr.kport_input.deinit();
+        mgr.tcp_host_input.deinit();
+        mgr.tcp_port_input.deinit();
+        mgr.callsign_input.deinit();
+    }
+
+    try std.testing.expectEqualStrings("10.10.2.114", mgr.host_input.value.items);
+    try std.testing.expectEqualStrings("8000", mgr.port_input.value.items);
+    try std.testing.expectEqualStrings("0", mgr.kport_input.value.items);
 }

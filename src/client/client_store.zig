@@ -243,12 +243,14 @@ pub const Store = struct {
     // -----------------------------------------------------------------------
 
     /// Read a config value as a blob. Caller owns the returned slice.
+    /// Uses `sqlite3_column_blob` (not `sqlite3_column_text`) so binary
+    /// values like secret keys round-trip without text-encoding side effects.
     pub fn getConfigBlob(self: *Store, key: []const u8) ?[]u8 {
-        const Row = struct { value: []u8 };
+        const Row = struct { value: sqlite.Blob };
         var stmt = self.db.prepare("SELECT value FROM client_config WHERE key = ?") catch return null;
         defer stmt.deinit();
         const row = stmt.oneAlloc(Row, self.allocator, .{}, .{key}) catch return null;
-        if (row) |r| return r.value;
+        if (row) |r| return @constCast(r.value.data);
         return null;
     }
 

@@ -10,14 +10,31 @@ const std = @import("std");
 const zz = @import("zigzag");
 
 const signing = @import("bbs").signing;
+const endpoint = @import("bbs").endpoint;
 
-/// Render the connection status indicator (green "● Connected" or red "○ Disconnected").
-pub fn renderConnIndicator(alloc: std.mem.Allocator, connected: bool) ![]const u8 {
+/// Render the connection status indicator. When connected, the active
+/// transport kind (AGWPE / TCP) is appended so the user can see at a
+/// glance which link the status line refers to:
+///   green  "● Connected (AGWPE)" / "● Connected (TCP)"
+///   red    "○ Disconnected"
+pub fn renderConnIndicator(
+    alloc: std.mem.Allocator,
+    connected: bool,
+    kind: endpoint.TransportKind,
+) ![]const u8 {
     var s = zz.Style{};
     s = s.bold(true);
     s = s.inline_style(true);
     s = s.fg(if (connected) zz.Color.green else zz.Color.red);
-    const label = if (connected) "\xe2\x97\x8f Connected" else "\xe2\x97\x8b Disconnected";
+    const kind_name = switch (kind) {
+        .agwpe => "AGWPE",
+        .tcp => "TCP",
+    };
+    const label = if (connected)
+        try std.fmt.allocPrint(alloc, "\xe2\x97\x8f Connected ({s})", .{kind_name})
+    else
+        try alloc.dupe(u8, "\xe2\x97\x8b Disconnected");
+    defer alloc.free(label);
     return s.render(alloc, label);
 }
 

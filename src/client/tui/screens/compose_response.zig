@@ -96,7 +96,7 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     // Flex the body input width to the modal panel (width 80, minus padding+border = 76).
     state.body_input.width = 76;
 
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected());
+    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
     const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
     const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
     const form_view = try state.form.view(alloc);

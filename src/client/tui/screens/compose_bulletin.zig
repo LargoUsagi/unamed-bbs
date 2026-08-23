@@ -98,7 +98,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const flex_width: u16 = @max(40, @min(avail, 120));
     state.bulletin_body_input.width = flex_width;
 
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected());
+    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
     const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
     const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
     const form_view = try state.form.view(alloc);
