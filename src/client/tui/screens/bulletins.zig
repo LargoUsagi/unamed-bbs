@@ -319,9 +319,17 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
 
 fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
     _ = ptr;
+    const ctx = state.ctx;
     // Preserve list focus if it was active before being suspended.
     if (!state.list_focused) {
         state.form.initFocus();
+    }
+    // High-bandwidth transports (direct TCP/IP) auto-fetch the newest
+    // bulletin summaries on page entry so the list is fresh without a
+    // manual "Request Recent". Low-bandwidth radio links skip this to avoid
+    // tying up the channel; the user presses "Request Recent" instead.
+    if (ctx.inbox.isHighBandwidth()) {
+        outbox.sendBulletinListRequest(ctx);
     }
     state.ctx.status = if (state.ctx.identity.bbs_key != null)
         "Bulletins — Request Recent or enter an ID and press Request by ID."
@@ -329,10 +337,23 @@ fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
         "No server key — request it from the Register screen.";
 }
 
+/// Called when popping back to this screen from a pushed sub-screen (e.g.
+/// returning from the bulletin detail view). Mirrors `onEnter`'s high-bandwidth
+/// auto-refresh so returning from reading a bulletin re-fetches the newest
+/// summaries. The outbox `busy` guard dedups overlapping sends.
+fn onResume(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    const ctx = state.ctx;
+    if (ctx.inbox.isHighBandwidth()) {
+        outbox.sendBulletinListRequest(ctx);
+    }
+}
+
 pub const vtable = zz.Screen.VTable{
     .update = update,
     .view = view,
     .on_enter = onEnter,
+    .on_resume = onResume,
 };
 
 pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Bulletins" };

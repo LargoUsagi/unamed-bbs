@@ -668,6 +668,7 @@ pub const mtu_payload: usize = 256;
 
 const agwpe_transport_vtable: transport.Transport.VTable = .{
     .mtu_payload = mtu_payload,
+    .high_bandwidth = false,
     .isConnected = transportIsConnected,
     .sendWire = transportSendWire,
     .drainIncoming = transportDrainIncoming,

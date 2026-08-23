@@ -449,7 +449,29 @@ fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
     state.selected_index = 0;
     state.scroll_offset = 0;
     state.ctx.status = "Viewing bulletin — Esc to return.";
-    outbox.sendBulletinResponseRequestIfGapped(state.ctx, state.bulletin_id);
+
+    const ctx = state.ctx;
+    if (ctx.inbox.isHighBandwidth()) {
+        // High-bandwidth (direct TCP/IP): auto-fetch the bulletin body when
+        // not yet loaded, and pull all missing responses (from id 0 when
+        // none are cached, or the tail/gaps otherwise). This makes the
+        // detail view self-populate without the user pressing 'R' / 'M'.
+        if (ctx.store.getById(state.bulletin_id)) |rec| {
+            var mut_rec = rec;
+            if (mut_rec.body.len == 0) {
+                outbox.sendSingleBulletinRequest(ctx, state.bulletin_id);
+            }
+            mut_rec.deinit(ctx.store.allocator);
+        } else {
+            // The bulletin row may not be cached yet either — request it by id.
+            outbox.sendSingleBulletinRequest(ctx, state.bulletin_id);
+        }
+        outbox.sendBulletinResponseRequest(ctx, state.bulletin_id);
+    } else {
+        // Low-bandwidth (radio/meshcore): only fill gaps in the responses
+        // already cached, and leave the body to the user's explicit 'R' press.
+        outbox.sendBulletinResponseRequestIfGapped(ctx, state.bulletin_id);
+    }
 }
 
 pub const vtable = zz.Screen.VTable{

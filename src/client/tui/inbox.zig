@@ -59,6 +59,15 @@ pub const Inbox = struct {
         self.transport = t;
     }
 
+    /// True when the attached transport is a high-bandwidth link (e.g. direct
+    /// TCP/IP). Returns false when no transport is attached. UI screens use
+    /// this to gate automatic data fetches on page entry that would be wasteful
+    /// or impolite over a slow radio channel (AGWPE/AX.25, meshcore).
+    pub fn isHighBandwidth(self: *const Inbox) bool {
+        const t = self.transport orelse return false;
+        return t.isHighBandwidth();
+    }
+
     /// Drain queued incoming messages from the transport and process each one.
     /// Called from `tick()`. Does nothing when no transport is attached or the
     /// transport is not connected (e.g. during the reconnect window, where the

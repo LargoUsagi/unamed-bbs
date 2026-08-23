@@ -481,6 +481,7 @@ pub const Connection = struct {
 
 const tcp_transport_vtable: transport.Transport.VTable = .{
     .mtu_payload = mtu_payload,
+    .high_bandwidth = true,
     .isConnected = transportIsConnected,
     .sendWire = transportSendWire,
     .drainIncoming = transportDrainIncoming,

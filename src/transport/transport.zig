@@ -74,6 +74,15 @@ pub const Transport = struct {
         /// `message_frame.max_payload_len` (the fixed backing-array cap).
         mtu_payload: usize,
 
+        /// True when the transport is a high-bandwidth link (e.g. direct
+        /// TCP/IP). False for low-bandwidth radio links (AGWPE/AX.25, a
+        /// future meshcore transport). The client UI uses this to decide
+        /// whether to auto-fetch data on page entry (e.g. request the
+        /// bulletins list, bulletin bodies, and responses) that would be
+        /// wasteful or impolite over a slow radio channel. Pure capability
+        /// flag — does not affect framing or the wire protocol.
+        high_bandwidth: bool,
+
         /// Returns true while the transport is connected and usable.
         isConnected: *const fn (ctx: *anyopaque) bool,
 
@@ -99,6 +108,14 @@ pub const Transport = struct {
 
     pub inline fn mtuPayload(self: Transport) usize {
         return self.vtable.mtu_payload;
+    }
+
+    /// True when this transport is a high-bandwidth link (e.g. direct TCP/IP).
+    /// UI code uses this to gate automatic data fetches that would be wasteful
+    /// over a slow radio link. Returns false when no transport is attached
+    /// (callers check `inbox.isHighBandwidth()` which guards the null case).
+    pub inline fn isHighBandwidth(self: Transport) bool {
+        return self.vtable.high_bandwidth;
     }
 
     pub inline fn isConnected(self: Transport) bool {
@@ -224,4 +241,44 @@ pub fn sendMultipart(
         });
         offset += chunk_len;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+/// A stub VTable for testing `isHighBandwidth` without a real transport.
+const StubCtx = struct {};
+
+fn stubIsConnected(_: *anyopaque) bool {
+    return true;
+}
+fn stubSendWire(_: *anyopaque, _: u4, _: []const u8, _: []const u8) anyerror!void {}
+fn stubDrainIncoming(_: *anyopaque, _: []IncomingMessage) usize {
+    return 0;
+}
+fn stubDisconnect(_: *anyopaque) void {}
+
+fn makeStubTransport(high_bw: bool) Transport {
+    var ctx: *StubCtx = undefined;
+    return .{
+        .ctx = @ptrCast(&ctx),
+        .vtable = &.{
+            .mtu_payload = 256,
+            .high_bandwidth = high_bw,
+            .isConnected = stubIsConnected,
+            .sendWire = stubSendWire,
+            .drainIncoming = stubDrainIncoming,
+            .disconnect = stubDisconnect,
+        },
+    };
+}
+
+test "Transport.isHighBandwidth reflects the vtable field" {
+    const high = makeStubTransport(true);
+    try testing.expect(high.isHighBandwidth());
+    const low = makeStubTransport(false);
+    try testing.expect(!low.isHighBandwidth());
 }
