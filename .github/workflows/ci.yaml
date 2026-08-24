@@ -17,16 +17,17 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - name: Pre-fetch SQLite Archive
-        env:
-          TMPDIR: ${{ runner.temp }}
+      - name: Pre-populate SQLite amalgamation cache
         run: |
-          mkdir -p ${{ runner.temp }}
-          for i in {1..3}; do
-            echo "Pre-fetching SQLite (Attempt $i)..."
-            zig fetch https://www.sqlite.org/2025/sqlite-amalgamation-3490200.zip && break || sleep 5
-            if [ $i -eq 3 ]; then exit 1; fi
-          done
+          HASH="N-V-__8AAH-mpwB7g3MnqYU-ooUBF1t99RP27dZ9addtMVXD"
+          CACHE_DIR="zig-pkg/$HASH"
+          mkdir -p "$CACHE_DIR"
+          curl --retry 5 --retry-delay 10 --retry-connrefused \
+            -sSL "https://www.sqlite.org/2025/sqlite-amalgamation-3490200.zip" \
+            -o sqlite.zip
+          unzip -q sqlite.zip
+          cp -r sqlite-amalgamation-3490200/* "$CACHE_DIR/"
+          rm -rf sqlite.zip sqlite-amalgamation-3490200
       - run: zig build test
 
   release:
@@ -40,16 +41,17 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - name: Pre-fetch SQLite Archive
-        env:
-          TMPDIR: ${{ runner.temp }}
+      - name: Pre-populate SQLite amalgamation cache
         run: |
-          mkdir -p ${{ runner.temp }}
-          for i in {1..3}; do
-            echo "Pre-fetching SQLite (Attempt $i)..."
-            zig fetch https://www.sqlite.org/2025/sqlite-amalgamation-3490200.zip && break || sleep 5
-            if [ $i -eq 3 ]; then exit 1; fi
-          done
+          HASH="N-V-__8AAH-mpwB7g3MnqYU-ooUBF1t99RP27dZ9addtMVXD"
+          CACHE_DIR="zig-pkg/$HASH"
+          mkdir -p "$CACHE_DIR"
+          curl --retry 5 --retry-delay 10 --retry-connrefused \
+            -sSL "https://www.sqlite.org/2025/sqlite-amalgamation-3490200.zip" \
+            -o sqlite.zip
+          unzip -q sqlite.zip
+          cp -r sqlite-amalgamation-3490200/* "$CACHE_DIR/"
+          rm -rf sqlite.zip sqlite-amalgamation-3490200
       - uses: goreleaser/goreleaser-action@v7
         with:
           install-only: true
