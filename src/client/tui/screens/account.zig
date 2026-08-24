@@ -46,8 +46,10 @@ pub fn init(ctx: *app.AppContext) void {
     state.avatar_input = zz.TextArea.init(std.heap.page_allocator);
     state.avatar_input.placeholder = "11x7 avatar (█ and space)";
     state.avatar_input.word_wrap = false;
-    state.avatar_input.width = 11;
-    state.avatar_input.height = 7;
+    state.avatar_input.width = @intCast(bbs.avatar.avatar_width);
+    state.avatar_input.height = @intCast(bbs.avatar.avatar_height);
+    state.avatar_input.max_lines = bbs.avatar.avatar_height;
+    state.avatar_input.max_cols = bbs.avatar.avatar_width;
 
     state.form = zz.Form(4).init();
     state.form.title = "Account";
@@ -78,6 +80,7 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     }
 
     _ = state.form.handleKey(k);
+    clampAvatarInput();
 
     if (state.form.isSubmitted()) {
         state.form.reset();
@@ -101,6 +104,57 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         return .{ .push = logout_confirm_screen.screen };
     }
     return .none;
+}
+
+/// Enforce the avatar grid dimensions on the TextArea: at most
+/// `avatar_height` lines (7) and at most `avatar_width` (11) display cells
+/// per line. The TextArea enforces `max_lines` on newline insertion but does
+/// not enforce `max_cols`, so we truncate oversize lines here after each key
+/// press. This keeps the editor within the 11×7 grid so there is no wrapping.
+fn clampAvatarInput() void {
+    const max_w = bbs.avatar.avatar_width;
+    const max_h = bbs.avatar.avatar_height;
+    const lines = &state.avatar_input.lines;
+    var row: usize = 0;
+    while (row < lines.items.len) : (row += 1) {
+        const line = &lines.items[row];
+        var display_w: usize = 0;
+        var byte_idx: usize = 0;
+        var truncate_at: usize = line.items.len;
+        while (byte_idx < line.items.len) {
+            const byte_len = std.unicode.utf8ByteSequenceLength(line.items[byte_idx]) catch 1;
+            if (byte_idx + byte_len > line.items.len) break;
+            const cp = std.unicode.utf8Decode(line.items[byte_idx..][0..byte_len]) catch {
+                display_w += 1;
+                byte_idx += 1;
+                continue;
+            };
+            const cw = zz.unicode.charWidth(cp);
+            if (display_w + cw > max_w) {
+                truncate_at = byte_idx;
+                break;
+            }
+            display_w += cw;
+            byte_idx += byte_len;
+        }
+        if (truncate_at < line.items.len) {
+            line.shrinkRetainingCapacity(truncate_at);
+        }
+    }
+    if (lines.items.len > max_h) {
+        var i: usize = max_h;
+        while (i < lines.items.len) : (i += 1) {
+            lines.items[i].deinit();
+        }
+        lines.shrinkRetainingCapacity(max_h);
+    }
+    if (state.avatar_input.cursor_row >= lines.items.len) {
+        state.avatar_input.cursor_row = if (lines.items.len > 0) lines.items.len - 1 else 0;
+    }
+    const cur_line = &lines.items[state.avatar_input.cursor_row];
+    if (state.avatar_input.cursor_col > cur_line.items.len) {
+        state.avatar_input.cursor_col = cur_line.items.len;
+    }
 }
 
 /// Read the TextArea content and send an `avatar_update` to the server.
@@ -219,6 +273,7 @@ fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
             var mut_user = user;
             defer mut_user.deinit(ctx.store.allocator);
             state.avatar_input.setValue(mut_user.avatar) catch {};
+            clampAvatarInput();
         } else {
             // User info not cached yet — request it so the avatar arrives.
             const ids = [_]u16{uid};
