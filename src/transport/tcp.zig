@@ -116,7 +116,15 @@ pub const EnvelopeParser = struct {
         comptime onEnvelope: fn (@TypeOf(ctx), u8, []const u8, []const u8, []const u8) void,
     ) void {
         var i: usize = 0;
-        while (i < data.len) {
+        // Continue looping while there is either more input data to consume, or
+        // a complete envelope (or enough header to compute one) already sitting
+        // in the buffer from a prior read. This prevents coalesced envelopes
+        // from being stranded in the buffer when no further data arrives to
+        // trigger another `feed` call.
+        while (i < data.len or
+            (self.needed == 0 and self.pos >= 3 + 1) or
+            (self.needed > 0 and self.pos >= self.needed))
+        {
             const available = data.len - i;
             // When needed == 0 we haven't determined the envelope size yet,
             // so copy all available bytes (up to buffer capacity) to
@@ -146,7 +154,15 @@ pub const EnvelopeParser = struct {
 
             if (self.needed > 0 and self.pos >= self.needed) {
                 self.emit(ctx, onEnvelope);
-                self.pos = 0;
+                // Preserve any trailing bytes (the next envelope(s)) that
+                // arrived in the same read. Previously this reset `pos = 0`,
+                // silently discarding every envelope coalesced into one TCP
+                // read beyond the first.
+                const leftover = self.pos - self.needed;
+                if (leftover > 0) {
+                    std.mem.copyForwards(u8, self.buf[0..leftover], self.buf[self.needed..self.pos]);
+                }
+                self.pos = leftover;
                 self.needed = 0;
             }
         }
@@ -250,6 +266,96 @@ test "EnvelopeParser handles split data" {
     try std.testing.expectEqualStrings("payload", ctx.frame);
 }
 
+test "EnvelopeParser parses multiple envelopes coalesced into one feed" {
+    // TCP coalesces multiple server sends into a single read; the parser must
+    // emit every envelope, not just the first. The callback copies each
+    // frame's bytes immediately because the parser reuses its buffer.
+    const Ctx = struct {
+        out: [128]u8 = [_]u8{0} ** 128,
+        out_len: usize = 0,
+        fn cb(self: *@This(), port: u8, src: []const u8, dest: []const u8, frame: []const u8) void {
+            _ = port;
+            _ = src;
+            _ = dest;
+            const space = self.out.len - self.out_len;
+            const n = @min(frame.len, space);
+            @memcpy(self.out[self.out_len..][0..n], frame[0..n]);
+            self.out_len += n;
+        }
+    };
+    var parser: EnvelopeParser = .{};
+    var ctx: Ctx = .{};
+
+    var buf: [128]u8 = undefined;
+    const n1 = writeEnvelope(&buf, 0, "A", "B", "first") orelse return error.EncodeFailed;
+    const n2 = writeEnvelope(buf[n1..], 0, "A", "B", "second") orelse return error.EncodeFailed;
+    const n3 = writeEnvelope(buf[n1 + n2 ..], 0, "A", "B", "third") orelse return error.EncodeFailed;
+    const total = n1 + n2 + n3;
+
+    // Feed all three envelopes in one call (simulating a coalesced TCP read).
+    parser.feed(buf[0..total], &ctx, Ctx.cb);
+
+    try std.testing.expectEqual(@as(usize, 5 + 6 + 5), ctx.out_len);
+    try std.testing.expectEqualStrings("firstsecondthird", ctx.out[0..ctx.out_len]);
+}
+
+test "EnvelopeParser parses a coalesced batch followed by more data" {
+    const Ctx = struct {
+        out: [128]u8 = [_]u8{0} ** 128,
+        out_len: usize = 0,
+        fn cb(self: *@This(), port: u8, src: []const u8, dest: []const u8, frame: []const u8) void {
+            _ = port;
+            _ = src;
+            _ = dest;
+            const space = self.out.len - self.out_len;
+            const n = @min(frame.len, space);
+            @memcpy(self.out[self.out_len..][0..n], frame[0..n]);
+            self.out_len += n;
+        }
+    };
+    var parser: EnvelopeParser = .{};
+    var ctx: Ctx = .{};
+
+    var buf: [128]u8 = undefined;
+    const n1 = writeEnvelope(&buf, 0, "A", "B", "one") orelse return error.EncodeFailed;
+    const n2 = writeEnvelope(buf[n1..], 0, "A", "B", "two") orelse return error.EncodeFailed;
+    const batch = n1 + n2;
+
+    // First read: two coalesced envelopes.
+    parser.feed(buf[0..batch], &ctx, Ctx.cb);
+
+    // Second read: one more envelope, arriving split across a read boundary.
+    const n3 = writeEnvelope(buf[0..], 0, "A", "B", "three") orelse return error.EncodeFailed;
+    parser.feed(buf[0..n3], &ctx, Ctx.cb);
+
+    try std.testing.expectEqual(@as(usize, 3 + 3 + 5), ctx.out_len);
+    try std.testing.expectEqualStrings("onetwothree", ctx.out[0..ctx.out_len]);
+}
+
+// ---------------------------------------------------------------------------
+// Full-path integration: encode → sign → split into multipart frames → TCP
+// envelopes → EnvelopeParser (fed in readVec-sized chunks) → drain 16 packets
+// per tick → Reassembler → signature verify → decode. Mirrors the runtime
+// receive path for a coalesced multipart burst with group_id=0 (as the server
+// outbox sends).
+// ---------------------------------------------------------------------------
+
+const FullPathCtx = struct {
+    items: *[128]IncomingMessage,
+    len: *usize,
+    fn cb(self: *@This(), port: u8, src: []const u8, dest: []const u8, frame: []const u8) void {
+        _ = port;
+        _ = src;
+        _ = dest;
+        if (self.len.* >= self.items.len) return;
+        var msg: IncomingMessage = .{};
+        _ = message_frame.decodeIncoming(frame, &msg);
+        self.items[self.len.*] = msg;
+        self.len.* += 1;
+    }
+};
+
+
 test "EnvelopeParser rejects bad magic" {
     const Ctx = struct {
         called: bool = false,
@@ -297,6 +403,10 @@ pub const Connection = struct {
 
     incoming_mutex: std.Io.Mutex = .init,
     incoming_queue: std.array_list.Managed(IncomingMessage) = undefined,
+    /// Read cursor into `incoming_queue` for FIFO draining. Messages before
+    /// this index have been drained; messages at and after are pending. Reset
+    /// to 0 (and the backing array cleared) once the queue empties.
+    drain_head: usize = 0,
     /// True once `connect()` or `acceptStream()` has been called (and the
     /// incoming_queue / allocator are initialized). Guards `disconnect` and
     /// `deinit` from touching an uninitialized queue.
@@ -385,13 +495,23 @@ pub const Connection = struct {
         try w.flush();
     }
 
-    /// Drain queued incoming messages into `dest`. Returns the number copied.
+    /// Drain up to `dest.len` queued incoming messages into `dest`, in FIFO
+    /// order. Returns the number copied. Messages that don't fit in `dest`
+    /// are retained for the next drain rather than discarded, so a burst
+    /// larger than the caller's buffer is processed across successive drains
+    /// instead of being silently dropped.
     pub fn drainIncoming(self: *Connection, dest: []IncomingMessage) usize {
         self.incoming_mutex.lockUncancelable(self.io);
         defer self.incoming_mutex.unlock(self.io);
-        const n = @min(self.incoming_queue.items.len, dest.len);
-        @memcpy(dest[0..n], self.incoming_queue.items[0..n]);
-        self.incoming_queue.clearRetainingCapacity();
+        const items = self.incoming_queue.items;
+        const avail = items.len - self.drain_head;
+        const n = @min(avail, dest.len);
+        @memcpy(dest[0..n], items[self.drain_head..][0..n]);
+        self.drain_head += n;
+        if (self.drain_head >= items.len) {
+            self.drain_head = 0;
+            self.incoming_queue.clearRetainingCapacity();
+        }
         return n;
     }
 
@@ -459,6 +579,7 @@ pub const Connection = struct {
             if (self.incoming_queue.items.len > 0) {
                 self.incoming_queue.clearRetainingCapacity();
             }
+            self.drain_head = 0;
         }
     }
 
@@ -506,4 +627,92 @@ fn transportDrainIncoming(ctx: *anyopaque, dest: []transport.IncomingMessage) us
 fn transportDisconnect(ctx: *anyopaque) void {
     const self: *Connection = @ptrCast(@alignCast(ctx));
     self.disconnect();
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Connection.drainIncoming FIFO retention
+// ---------------------------------------------------------------------------
+
+test "drainIncoming retains messages beyond dest capacity (FIFO)" {
+    const allocator = std.testing.allocator;
+    var conn: Connection = .{};
+    conn.io = std.testing.io;
+    conn.allocator = allocator;
+    conn.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
+    conn.initialized = true;
+    defer conn.incoming_queue.deinit();
+
+    // Queue 20 dummy messages whose port encodes their original index (mod 16).
+    for (0..20) |i| {
+        var msg: IncomingMessage = .{};
+        msg.port = @intCast(i & 0x0F);
+        try conn.incoming_queue.append(msg);
+    }
+
+    // dest holds 8; the other 12 must be retained for the next drain.
+    var dest: [8]IncomingMessage = undefined;
+    const n1 = conn.drainIncoming(&dest);
+    try std.testing.expectEqual(@as(usize, 8), n1);
+    try std.testing.expectEqual(@as(usize, 20), conn.incoming_queue.items.len);
+    try std.testing.expectEqual(@as(usize, 8), conn.drain_head);
+    for (dest[0..8], 0..) |m, i| {
+        try std.testing.expectEqual(@as(u4, @intCast(i & 0x0F)), m.port);
+    }
+
+    // Drain the next 8 — order preserved, still not fully drained.
+    var dest2: [8]IncomingMessage = undefined;
+    const n2 = conn.drainIncoming(&dest2);
+    try std.testing.expectEqual(@as(usize, 8), n2);
+    try std.testing.expectEqual(@as(usize, 16), conn.drain_head);
+    for (dest2[0..8], 0..) |m, i| {
+        try std.testing.expectEqual(@as(u4, @intCast((8 + i) & 0x0F)), m.port);
+    }
+
+    // Drain the final 4 — queue empties, head resets to 0 and backing clears.
+    var dest3: [8]IncomingMessage = undefined;
+    const n3 = conn.drainIncoming(&dest3);
+    try std.testing.expectEqual(@as(usize, 4), n3);
+    try std.testing.expectEqual(@as(usize, 0), conn.drain_head);
+    try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
+    for (dest3[0..4], 0..) |m, i| {
+        try std.testing.expectEqual(@as(u4, @intCast((16 + i) & 0x0F)), m.port);
+    }
+
+    // A further drain returns 0 (and stays empty).
+    var dest4: [4]IncomingMessage = undefined;
+    try std.testing.expectEqual(@as(usize, 0), conn.drainIncoming(&dest4));
+}
+
+test "drainIncoming drains newly appended messages after a partial drain" {
+    const allocator = std.testing.allocator;
+    var conn: Connection = .{};
+    conn.io = std.testing.io;
+    conn.allocator = allocator;
+    conn.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
+    conn.initialized = true;
+    defer conn.incoming_queue.deinit();
+
+    for (0..5) |i| {
+        var msg: IncomingMessage = .{};
+        msg.port = @intCast(i);
+        try conn.incoming_queue.append(msg);
+    }
+    var dest: [3]IncomingMessage = undefined;
+    try std.testing.expectEqual(@as(usize, 3), conn.drainIncoming(&dest));
+
+    // Reader thread appends more while 2 are still pending.
+    for (5..8) |i| {
+        var msg: IncomingMessage = .{};
+        msg.port = @intCast(i);
+        try conn.incoming_queue.append(msg);
+    }
+
+    // Pending 2 + newly appended 3 = 5 available, in FIFO order.
+    var dest2: [10]IncomingMessage = undefined;
+    const n = conn.drainIncoming(&dest2);
+    try std.testing.expectEqual(@as(usize, 5), n);
+    for (dest2[0..5], 0..) |m, i| {
+        try std.testing.expectEqual(@as(u4, @intCast(i)), m.port);
+    }
+    try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
 }

@@ -440,6 +440,10 @@ pub const Connection = struct {
 
     incoming_mutex: std.Io.Mutex = .init,
     incoming_queue: std.array_list.Managed(IncomingMessage) = undefined,
+    /// Read cursor into `incoming_queue` for FIFO draining. Messages before
+    /// this index have been drained; messages at and after are pending. Reset
+    /// to 0 (and the backing array cleared) once the queue empties.
+    drain_head: usize = 0,
 
     /// Source callsign for outgoing UI frames (set by CLI/TUI).
     callsign: [agw_callsign_len]u8 = std.mem.zeroes([agw_callsign_len]u8),
@@ -550,13 +554,23 @@ pub const Connection = struct {
         try w.flush();
     }
 
-    /// Drain queued incoming messages into `dest`. Returns the number copied.
+    /// Drain up to `dest.len` queued incoming messages into `dest`, in FIFO
+    /// order. Returns the number copied. Messages that don't fit in `dest`
+    /// are retained for the next drain rather than discarded, so a burst
+    /// larger than the caller's buffer is processed across successive drains
+    /// instead of being silently dropped.
     pub fn drainIncoming(self: *Connection, dest: []IncomingMessage) usize {
         self.incoming_mutex.lockUncancelable(self.io);
         defer self.incoming_mutex.unlock(self.io);
-        const n = @min(self.incoming_queue.items.len, dest.len);
-        @memcpy(dest[0..n], self.incoming_queue.items[0..n]);
-        self.incoming_queue.clearRetainingCapacity();
+        const items = self.incoming_queue.items;
+        const avail = items.len - self.drain_head;
+        const n = @min(avail, dest.len);
+        @memcpy(dest[0..n], items[self.drain_head..][0..n]);
+        self.drain_head += n;
+        if (self.drain_head >= items.len) {
+            self.drain_head = 0;
+            self.incoming_queue.clearRetainingCapacity();
+        }
         return n;
     }
 
@@ -642,6 +656,7 @@ pub const Connection = struct {
         if (self.incoming_queue.items.len > 0) {
             self.incoming_queue.clearRetainingCapacity();
         }
+        self.drain_head = 0;
     }
 
     pub fn deinit(self: *Connection) void {
@@ -693,4 +708,83 @@ fn transportDrainIncoming(ctx: *anyopaque, dest: []transport.IncomingMessage) us
 fn transportDisconnect(ctx: *anyopaque) void {
     const self: *Connection = @ptrCast(@alignCast(ctx));
     self.disconnect();
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Connection.drainIncoming FIFO retention
+// ---------------------------------------------------------------------------
+
+test "drainIncoming retains messages beyond dest capacity (FIFO)" {
+    const allocator = std.testing.allocator;
+    var conn: Connection = .{};
+    conn.io = std.testing.io;
+    conn.allocator = allocator;
+    conn.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
+    defer conn.incoming_queue.deinit();
+
+    for (0..20) |i| {
+        var msg: IncomingMessage = .{};
+        msg.port = @intCast(i & 0x0F);
+        try conn.incoming_queue.append(msg);
+    }
+
+    var dest: [8]IncomingMessage = undefined;
+    const n1 = conn.drainIncoming(&dest);
+    try std.testing.expectEqual(@as(usize, 8), n1);
+    try std.testing.expectEqual(@as(usize, 20), conn.incoming_queue.items.len);
+    try std.testing.expectEqual(@as(usize, 8), conn.drain_head);
+    for (dest[0..8], 0..) |m, i| {
+        try std.testing.expectEqual(@as(u4, @intCast(i & 0x0F)), m.port);
+    }
+
+    var dest2: [8]IncomingMessage = undefined;
+    const n2 = conn.drainIncoming(&dest2);
+    try std.testing.expectEqual(@as(usize, 8), n2);
+    try std.testing.expectEqual(@as(usize, 16), conn.drain_head);
+    for (dest2[0..8], 0..) |m, i| {
+        try std.testing.expectEqual(@as(u4, @intCast((8 + i) & 0x0F)), m.port);
+    }
+
+    var dest3: [8]IncomingMessage = undefined;
+    const n3 = conn.drainIncoming(&dest3);
+    try std.testing.expectEqual(@as(usize, 4), n3);
+    try std.testing.expectEqual(@as(usize, 0), conn.drain_head);
+    try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
+    for (dest3[0..4], 0..) |m, i| {
+        try std.testing.expectEqual(@as(u4, @intCast((16 + i) & 0x0F)), m.port);
+    }
+
+    var dest4: [4]IncomingMessage = undefined;
+    try std.testing.expectEqual(@as(usize, 0), conn.drainIncoming(&dest4));
+}
+
+test "drainIncoming drains newly appended messages after a partial drain" {
+    const allocator = std.testing.allocator;
+    var conn: Connection = .{};
+    conn.io = std.testing.io;
+    conn.allocator = allocator;
+    conn.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
+    defer conn.incoming_queue.deinit();
+
+    for (0..5) |i| {
+        var msg: IncomingMessage = .{};
+        msg.port = @intCast(i);
+        try conn.incoming_queue.append(msg);
+    }
+    var dest: [3]IncomingMessage = undefined;
+    try std.testing.expectEqual(@as(usize, 3), conn.drainIncoming(&dest));
+
+    for (5..8) |i| {
+        var msg: IncomingMessage = .{};
+        msg.port = @intCast(i);
+        try conn.incoming_queue.append(msg);
+    }
+
+    var dest2: [10]IncomingMessage = undefined;
+    const n = conn.drainIncoming(&dest2);
+    try std.testing.expectEqual(@as(usize, 5), n);
+    for (dest2[0..5], 0..) |m, i| {
+        try std.testing.expectEqual(@as(u4, @intCast(i)), m.port);
+    }
+    try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
 }

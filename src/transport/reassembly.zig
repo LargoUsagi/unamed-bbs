@@ -152,7 +152,6 @@ pub const Reassembler = struct {
 
     fn completeReassembly(self: *Reassembler, entry: *Entry) ?ReassembledMsg {
         const allocator = std.heap.page_allocator;
-
         // Calculate total reassembled payload size.
         var total: usize = 0;
         var i: u8 = 0;
@@ -194,3 +193,161 @@ pub const Reassembler = struct {
         };
     }
 };
+
+// ---------------------------------------------------------------------------
+// Integration tests — burst reassembly simulating the client inbox draining
+// a coalesced multipart burst 16 packets at a time across ticks.
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+/// Build a synthetic multipart `IncomingMessage` for one packet of a logical
+/// message. `payload` is the chunk bytes for this packet; packet 0 is marked
+/// signed and carries `sig`.
+fn makePacket(
+    pn: u8,
+    packet_count: u8,
+    chunk: []const u8,
+    sig: [message_frame.signature_len]u8,
+) IncomingMessage {
+    var im: IncomingMessage = .{};
+    im.is_message_frame = true;
+    im.msg_type = .bulletin;
+    im.has_callsign = true;
+    im.callsign = std.mem.zeroes([message_frame.callsign_len]u8);
+    im.callsign[0] = 'S';
+    im.callsign[1] = 'R';
+    im.callsign[2] = 'V';
+    im.callsign_str_len = 3;
+    im.group_id = 0; // all messages share group_id 0, like the server outbox
+    im.packet_number = pn;
+    im.packet_count = packet_count;
+    @memcpy(im.frame_payload[0..chunk.len], chunk);
+    im.frame_payload_len = @intCast(chunk.len);
+    if (pn == 0) {
+        im.signed = true;
+        im.signature = sig;
+    }
+    return im;
+}
+
+test "Reassembler: 10 multipart messages (group_id=0) drained 16 packets per tick" {
+    const allocator = testing.allocator;
+    var reassembler: Reassembler = .{};
+
+    const n_msgs: usize = 10;
+    const packets_per_msg: u8 = 5;
+    const total_packets: usize = n_msgs * packets_per_msg; // 50
+
+    // Each logical message has a distinct payload so reassembly correctness
+    // can be checked: message m's full payload is m*100 repeated 256 times,
+    // split into 5 chunks of 256,256,256,256,? (last shorter).
+    const chunk_size: usize = 256;
+    const full_len: usize = chunk_size * (packets_per_msg - 1) + 100; // 4*256 + 100 = 1124
+    var full_payloads: [10][]u8 = undefined;
+    var chunks: [50][]u8 = undefined;
+    var sigs: [10][message_frame.signature_len]u8 = undefined;
+    for (0..n_msgs) |m| {
+        full_payloads[m] = try allocator.alloc(u8, full_len);
+        @memset(full_payloads[m], @intCast((m + 1) % 256));
+        sigs[m] = .{0} ** message_frame.signature_len;
+        sigs[m][0] = @intCast(m + 1); // distinguish signatures
+        for (0..packets_per_msg) |p| {
+            const start = p * chunk_size;
+            const end = @min(start + chunk_size, full_len);
+            chunks[m * packets_per_msg + p] = full_payloads[m][start..end];
+        }
+    }
+    defer for (0..n_msgs) |m| allocator.free(full_payloads[m]);
+
+    // Build all 50 packet IncomingMessages in wire order (message 0 packets 0..4,
+    // then message 1 packets 0..4, ...).
+    var ims: [50]IncomingMessage = undefined;
+    for (0..n_msgs) |m| {
+        for (0..packets_per_msg) |p| {
+            ims[m * packets_per_msg + p] = makePacket(
+                @intCast(p),
+                packets_per_msg,
+                chunks[m * packets_per_msg + p],
+                sigs[m],
+            );
+        }
+    }
+
+    // Drain 16 packets per "tick" (exactly how the client inbox drains), feeding
+    // each through the reassembler. Completed messages are collected.
+    var completed: usize = 0;
+    var seen: [10]bool = .{false} ** 10;
+    var i: usize = 0;
+    while (i < total_packets) {
+        const end = @min(i + 16, total_packets);
+        for (i..end) |j| {
+            if (reassembler.feed(ims[j], 1000)) |msg| {
+                completed += 1;
+                // The reassembled payload must equal the original full payload.
+                const m = msg.payload[0] - 1;
+                try testing.expectEqual(@as(usize, full_len), msg.payload.len);
+                try testing.expectEqualSlices(u8, full_payloads[m], msg.payload);
+                // The signature captured from packet 0 must survive.
+                try testing.expect(msg.signature != null);
+                try testing.expectEqual(sigs[m], msg.signature.?);
+                seen[m] = true;
+                allocator.free(msg.payload);
+            }
+        }
+        i = end;
+    }
+
+    try testing.expectEqual(n_msgs, completed);
+    for (seen) |s| try testing.expect(s);
+}
+
+test "Reassembler: straddled message completes on the next drain batch" {
+    const allocator = testing.allocator;
+    var reassembler: Reassembler = .{};
+
+    // 3 messages, 3 packets each (9 packets). Drain 4 at a time: batch 1 =
+    // msg0(3) + msg1.p0; batch 2 = msg1.p1,p2 + msg2(3) + ...; every message
+    // must complete even when it straddles a drain boundary, all with
+    // group_id=0.
+    const n_msgs: usize = 3;
+    const pp: u8 = 3;
+    var full: [3][]u8 = undefined;
+    var chunks: [9][]u8 = undefined;
+    var sigs: [3][message_frame.signature_len]u8 = undefined;
+    for (0..n_msgs) |m| {
+        full[m] = try allocator.alloc(u8, 700); // 3 chunks: 256+256+188
+        @memset(full[m], @intCast((m + 1) % 256));
+        sigs[m] = .{0} ** message_frame.signature_len;
+        sigs[m][0] = @intCast(m + 100);
+        for (0..pp) |p| {
+            const s = p * 256;
+            const e = @min(s + 256, 700);
+            chunks[m * pp + p] = full[m][s..e];
+        }
+    }
+    defer for (0..n_msgs) |m| allocator.free(full[m]);
+
+    var ims: [9]IncomingMessage = undefined;
+    for (0..n_msgs) |m| {
+        for (0..pp) |p| {
+            ims[m * pp + p] = makePacket(@intCast(p), pp, chunks[m * pp + p], sigs[m]);
+        }
+    }
+
+    var completed: usize = 0;
+    var i: usize = 0;
+    while (i < 9) {
+        const end = @min(i + 4, 9);
+        for (i..end) |j| {
+            if (reassembler.feed(ims[j], 1000)) |msg| {
+                completed += 1;
+                const m = msg.payload[0] - 1;
+                try testing.expectEqualSlices(u8, full[m], msg.payload);
+                allocator.free(msg.payload);
+            }
+        }
+        i = end;
+    }
+    try testing.expectEqual(@as(usize, 3), completed);
+}
