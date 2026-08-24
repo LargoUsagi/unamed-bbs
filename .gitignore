@@ -1,0 +1,12 @@
+.zig-cache/
+zig-out/
+zig-pkg/
+
+client_store.sqlite
+*.sqlite
+*.sqlite-journal
+
+.idea/
+.vscode/
+
+dist/

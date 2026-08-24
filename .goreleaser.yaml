@@ -1,0 +1,71 @@
+version: 2
+
+project_name: unamed-bbs
+
+before:
+  hooks:
+    - zig build test
+
+builds:
+  - id: bbs
+    builder: zig
+    binary: bbs
+    targets:
+      - x86_64-linux-musl
+      - x86_64-windows
+      - aarch64-linux-musl
+    flags:
+      - -Doptimize=ReleaseSafe
+
+  - id: bbs_server
+    builder: zig
+    binary: bbs_server
+    targets:
+      - x86_64-linux-musl
+      - x86_64-windows
+      - aarch64-linux-musl
+    flags:
+      - -Doptimize=ReleaseSafe
+
+archives:
+  - id: default
+    ids:
+      - bbs
+      - bbs_server
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "windows" }}windows_x86_64
+      {{- else if eq .Arch "arm64" }}linux_aarch64
+      {{- else }}linux_x86_64{{- end }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - AGENTS.md
+      - build.zig
+      - build.zig.zon
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - 'Merge pull request'
+      - 'Merge branch'
+
+release:
+  github:
+    owner: LargoUsagi
+    name: unamed-bbs
+  draft: true
+  prerelease: auto
