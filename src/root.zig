@@ -20,3 +20,5 @@ pub const signing = @import("signing.zig");
 pub const message_frame = @import("message_frame.zig");
 pub const store = @import("store.zig");
 pub const unishox2 = @import("unishox2.zig");
+pub const avatar = @import("avatar.zig");
+

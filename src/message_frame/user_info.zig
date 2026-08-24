@@ -1,7 +1,7 @@
 //! `user_info` and `user_info_request` message types.
 //!
 //! `user_info` carries a user's full profile (id, handle, callsign, public
-//! key, registered_datetime). The server broadcasts it to CQ whenever a
+//! key, registered_datetime, avatar). The server broadcasts it to CQ whenever a
 //! new user registers (so all clients can cache the new user) and in
 //! response to a `user_info_request`.
 //!
@@ -13,7 +13,8 @@
 //!   `user_info`:
 //!     `id` (u16 LE, 2B) + `registered_datetime` (u64 LE, 8B) +
 //!     `handle_len` (u8, 1B) + `handle` + `callsign_len` (u8, 1B) + `callsign`
-//!     + `public_key` (32B)
+//!     + `public_key` (32B) + `is_sysop` (u8, 1B) +
+//!     `avatar_len` (u8, 1B) + `avatar`
 //!   `user_info_request`:
 //!     `count` (u8, 1B) + per entry: `user_id` (u16 LE, 2B)
 
@@ -39,15 +40,20 @@ pub const UserInfo = struct {
     /// True if this user is the system operator (admin). The first registered
     /// user on the server becomes the sysop.
     is_sysop: bool = false,
+    /// Server-computed ASCII art avatar (7 lines joined by '\n'). May be empty
+    /// for users registered before avatars were supported. Caller owns this
+    /// slice after `decode`.
+    avatar: []const u8 = &.{},
 
     /// Serialize into `buf`. Returns the number of bytes written, or `null` if
-    /// the handle or callsign exceed 255 bytes or the total exceeds
+    /// the handle, callsign, or avatar exceed 255 bytes or the total exceeds
     /// `max_payload_len`.
     pub fn encode(self: UserInfo, buf: []u8) ?usize {
         if (self.handle.len > 255) return null;
         if (self.callsign.len > 255) return null;
-        const fixed = 2 + 8 + 1 + 1 + public_key_len + 1;
-        const total = fixed + self.handle.len + self.callsign.len;
+        if (self.avatar.len > 255) return null;
+        const fixed = 2 + 8 + 1 + 1 + public_key_len + 1 + 1;
+        const total = fixed + self.handle.len + self.callsign.len + self.avatar.len;
         if (total > max_payload_len) return null;
         if (buf.len < total) return null;
 
@@ -68,13 +74,17 @@ pub const UserInfo = struct {
         pos += public_key_len;
         buf[pos] = if (self.is_sysop) 1 else 0;
         pos += 1;
+        buf[pos] = @intCast(self.avatar.len);
+        pos += 1;
+        @memcpy(buf[pos..][0..self.avatar.len], self.avatar);
+        pos += self.avatar.len;
         return pos;
     }
 
-    /// Deserialize from `data`. Allocates `handle` and `callsign` — the
-    /// caller must call `deinit` to free. Returns `null` for malformed data.
+    /// Deserialize from `data`. Allocates `handle`, `callsign`, and `avatar` —
+    /// the caller must call `deinit` to free. Returns `null` for malformed data.
     pub fn decode(allocator: std.mem.Allocator, data: []const u8) !?UserInfo {
-        const min_len = 2 + 8 + 1 + 1 + public_key_len + 1;
+        const min_len = 2 + 8 + 1 + 1 + public_key_len + 1 + 1;
         if (data.len < min_len) return null;
         var pos: usize = 0;
         const id = std.mem.readInt(u16, data[pos..][0..2], .little);
@@ -83,18 +93,23 @@ pub const UserInfo = struct {
         pos += 8;
         const handle_len: usize = data[pos];
         pos += 1;
-        if (data.len < pos + handle_len + 1 + public_key_len + 1) return null;
+        if (data.len < pos + handle_len + 1 + public_key_len + 1 + 1) return null;
         const handle = try allocator.dupe(u8, data[pos .. pos + handle_len]);
         pos += handle_len;
         const callsign_len: usize = data[pos];
         pos += 1;
-        if (data.len < pos + callsign_len + public_key_len + 1) return null;
+        if (data.len < pos + callsign_len + public_key_len + 1 + 1) return null;
         const callsign = try allocator.dupe(u8, data[pos .. pos + callsign_len]);
         pos += callsign_len;
         var public_key: [public_key_len]u8 = undefined;
         @memcpy(&public_key, data[pos..][0..public_key_len]);
         pos += public_key_len;
         const is_sysop = data[pos] != 0;
+        pos += 1;
+        const avatar_len: usize = data[pos];
+        pos += 1;
+        if (data.len < pos + avatar_len) return null;
+        const avatar = try allocator.dupe(u8, data[pos .. pos + avatar_len]);
 
         return .{
             .id = id,
@@ -103,6 +118,7 @@ pub const UserInfo = struct {
             .callsign = callsign,
             .public_key = public_key,
             .is_sysop = is_sysop,
+            .avatar = avatar,
         };
     }
 
@@ -110,6 +126,7 @@ pub const UserInfo = struct {
     pub fn deinit(self: UserInfo, allocator: std.mem.Allocator) void {
         allocator.free(@constCast(self.handle));
         allocator.free(@constCast(self.callsign));
+        if (self.avatar.len != 0) allocator.free(@constCast(self.avatar));
     }
 };
 
@@ -160,6 +177,7 @@ pub const UserInfoRequest = struct {
 test "user_info encode/decode round trip" {
     const allocator = std.testing.allocator;
     const pk = [_]u8{0xAB} ** 32;
+    const avatar_str = "█  █  █\n █ █ █ \n█  █  █";
     const ui: UserInfo = .{
         .id = 42,
         .registered_datetime = 1724022400,
@@ -167,6 +185,7 @@ test "user_info encode/decode round trip" {
         .callsign = "KE8WIF",
         .public_key = pk,
         .is_sysop = true,
+        .avatar = avatar_str,
     };
 
     var buf: [max_payload_len]u8 = undefined;
@@ -180,6 +199,7 @@ test "user_info encode/decode round trip" {
     try std.testing.expectEqualStrings("KE8WIF", decoded.callsign);
     try std.testing.expectEqualSlices(u8, &pk, &decoded.public_key);
     try std.testing.expectEqual(true, decoded.is_sysop);
+    try std.testing.expectEqualStrings(avatar_str, decoded.avatar);
 }
 
 test "user_info encode rejects handle > 255 bytes" {
@@ -191,6 +211,19 @@ test "user_info encode rejects handle > 255 bytes" {
         .handle = &long_handle,
         .callsign = "CS",
         .public_key = [_]u8{0} ** 32,
+    }).encode(&buf) == null);
+}
+
+test "user_info encode rejects avatar > 255 bytes" {
+    const long_avatar = [_]u8{'x'} ** 256;
+    var buf: [max_payload_len]u8 = undefined;
+    try std.testing.expect((UserInfo{
+        .id = 1,
+        .registered_datetime = 0,
+        .handle = "h",
+        .callsign = "CS",
+        .public_key = [_]u8{0} ** 32,
+        .avatar = &long_avatar,
     }).encode(&buf) == null);
 }
 
@@ -217,6 +250,7 @@ test "user_info encode/decode with empty handle and callsign" {
     try std.testing.expectEqual(@as(u16, 7), decoded.id);
     try std.testing.expectEqual(@as(usize, 0), decoded.handle.len);
     try std.testing.expectEqual(@as(usize, 0), decoded.callsign.len);
+    try std.testing.expectEqual(@as(usize, 0), decoded.avatar.len);
 }
 
 test "user_info_request encode/decode round trip" {

@@ -26,59 +26,10 @@ const outbox = @import("../outbox.zig");
 const compose_response_screen = @import("compose_response.zig");
 const settings_screen = @import("settings.zig");
 const client_store = @import("../../client_store.zig");
+const avatar_widget = @import("../widgets/avatar.zig");
 
 /// Width of the left sidebar in each post box.
 const sidebar_width: usize = 14;
-
-/// Width of the ASCII art avatar.
-const avatar_width: usize = 11;
-/// Height of the ASCII art avatar.
-const avatar_height: usize = 7;
-
-/// Generate an 11×7 symmetric ASCII art avatar from a 32-byte public key.
-/// The left 6 columns are generated from key bits; columns 6-10 mirror
-/// columns 4-0 to create a symmetric pattern. Uses '█' for filled cells
-/// and ' ' for empty. Returns 7 lines joined by '\n'. Caller owns the result.
-fn generateAvatar(alloc: std.mem.Allocator, public_key: [32]u8) ![]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-
-    for (0..avatar_height) |row| {
-        // First 6 columns (0-5) from key bits.
-        for (0..6) |col| {
-            const bit_idx = row * 6 + col;
-            const byte_idx = bit_idx / 8;
-            const bit_in_byte: u3 = @intCast(7 - (bit_idx % 8));
-            const filled = (public_key[byte_idx] & (@as(u8, 1) << bit_in_byte)) != 0;
-            try buf.appendSlice(alloc, if (filled) "█" else " ");
-        }
-        // Mirrored 5 columns (6-10 = mirror of 4-0).
-        for (0..5) |col| {
-            const src_col = 4 - col;
-            const bit_idx = row * 6 + src_col;
-            const byte_idx = bit_idx / 8;
-            const bit_in_byte: u3 = @intCast(7 - (bit_idx % 8));
-            const filled = (public_key[byte_idx] & (@as(u8, 1) << bit_in_byte)) != 0;
-            try buf.appendSlice(alloc, if (filled) "█" else " ");
-        }
-        if (row < avatar_height - 1) try buf.append(alloc, '\n');
-    }
-
-    return buf.toOwnedSlice(alloc);
-}
-
-/// Generate an 11×7 avatar from a u16 user id (used when the user is not
-/// cached and no public key is available). Derives a pseudo-random 32-byte
-/// key from the id so the avatar is deterministic.
-fn generateAvatarFromId(alloc: std.mem.Allocator, user_id: u16) ![]const u8 {
-    var key: [32]u8 = std.mem.zeroes([32]u8);
-    var rng_state: u32 = user_id;
-    for (&key) |*b| {
-        rng_state = rng_state *% 1103515245 +% 12345;
-        b.* = @truncate(rng_state >> 16);
-    }
-    return generateAvatar(alloc, key);
-}
 
 pub const State = struct {
     ctx: *app.AppContext = undefined,
@@ -201,7 +152,7 @@ fn renderPost(
     if (store.getUserById(user_id)) |user| {
         var mut_user = user;
         defer mut_user.deinit(store.allocator);
-        const avatar = try generateAvatar(alloc, mut_user.public_key);
+        const avatar = try avatar_widget.render(alloc, mut_user.avatar);
         defer alloc.free(avatar);
         const post_time = try formatDateTime(alloc, create_datetime);
         defer alloc.free(post_time);
@@ -210,7 +161,7 @@ fn renderPost(
         });
         sidebar_owned = true;
     } else {
-        const avatar = try generateAvatarFromId(alloc, user_id);
+        const avatar = try avatar_widget.render(alloc, "");
         defer alloc.free(avatar);
         const post_time = try formatDateTime(alloc, create_datetime);
         defer alloc.free(post_time);

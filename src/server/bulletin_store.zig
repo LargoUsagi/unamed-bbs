@@ -210,13 +210,19 @@ pub const Store = struct {
     // -----------------------------------------------------------------------
 
     /// Register a new user. Returns the assigned u16 id.
-    pub fn addUser(self: *Store, handle: []const u8, callsign: []const u8, public_key: [32]u8, registered_datetime: u64, is_sysop: bool) !u16 {
-        return store.addUser(&self.db, handle, callsign, public_key, registered_datetime, is_sysop);
+    pub fn addUser(self: *Store, handle: []const u8, callsign: []const u8, public_key: [32]u8, registered_datetime: u64, is_sysop: bool, avatar: []const u8) !u16 {
+        return store.addUser(&self.db, handle, callsign, public_key, registered_datetime, is_sysop, avatar);
     }
 
-    /// Update an existing user's callsign, public key, and registered_datetime by id.
-    pub fn updateUser(self: *Store, id: u16, callsign: []const u8, public_key: [32]u8, registered_datetime: u64, is_sysop: bool) !void {
-        return store.updateUser(&self.db, id, callsign, public_key, registered_datetime, is_sysop);
+    /// Update an existing user's callsign, public key, registered_datetime, and avatar by id.
+    pub fn updateUser(self: *Store, id: u16, callsign: []const u8, public_key: [32]u8, registered_datetime: u64, is_sysop: bool, avatar: []const u8) !void {
+        return store.updateUser(&self.db, id, callsign, public_key, registered_datetime, is_sysop, avatar);
+    }
+
+    /// Update only the avatar column for a user (used by the `avatar_update`
+    /// handler).
+    pub fn updateAvatar(self: *Store, id: u16, avatar: []const u8) !void {
+        return store.updateUserAvatar(&self.db, id, avatar);
     }
 
     /// Look up a user by handle. Caller owns the result and must call deinit().
@@ -261,10 +267,15 @@ pub const Store = struct {
         for (users) |u| {
             if (signing.verify(signature, payload, u.public_key)) {
                 // Return a copy that the caller owns (re-allocate
-                // handle/callsign so the caller can deinit independently).
+                // handle/callsign/avatar so the caller can deinit independently).
                 const handle_copy = self.allocator.dupe(u8, u.handle) catch return null;
                 const callsign_copy = self.allocator.dupe(u8, u.callsign) catch {
                     self.allocator.free(handle_copy);
+                    return null;
+                };
+                const avatar_copy = self.allocator.dupe(u8, u.avatar) catch {
+                    self.allocator.free(handle_copy);
+                    self.allocator.free(callsign_copy);
                     return null;
                 };
                 return .{
@@ -274,6 +285,7 @@ pub const Store = struct {
                     .public_key = u.public_key,
                     .registered_datetime = u.registered_datetime,
                     .is_sysop = u.is_sysop,
+                    .avatar = avatar_copy,
                 };
             }
         }
@@ -491,7 +503,7 @@ test "Store addUser inserts and getUserByHandle retrieves" {
     defer store_inst.deinit();
 
     const pk = [_]u8{0xAA} ** 32;
-    const id = try store_inst.addUser("brad", "KE8WIF", pk, 1000, false);
+    const id = try store_inst.addUser("brad", "KE8WIF", pk, 1000, false, "");
     try std.testing.expect(id >= 1);
 
     var u = store_inst.getUserByHandle("brad").?;
@@ -509,10 +521,10 @@ test "Store updateUser changes callsign and public key" {
     defer store_inst.deinit();
 
     const pk1 = [_]u8{0x11} ** 32;
-    const id = try store_inst.addUser("brad", "KE8WIF", pk1, 1000, false);
+    const id = try store_inst.addUser("brad", "KE8WIF", pk1, 1000, false, "");
 
     const pk2 = [_]u8{0x22} ** 32;
-    try store_inst.updateUser(id, "N0CALL", pk2, 2000, false);
+    try store_inst.updateUser(id, "N0CALL", pk2, 2000, false, "");
 
     var u = store_inst.getUserByHandle("brad").?;
     defer u.deinit(allocator);
@@ -527,8 +539,8 @@ test "Store addUser allows distinct handles with same callsign" {
     defer store_inst.deinit();
 
     const pk = [_]u8{0x33} ** 32;
-    const id1 = try store_inst.addUser("brad", "KE8WIF", pk, 1000, false);
-    const id2 = try store_inst.addUser("op", "KE8WIF", pk, 2000, false);
+    const id1 = try store_inst.addUser("brad", "KE8WIF", pk, 1000, false, "");
+    const id2 = try store_inst.addUser("op", "KE8WIF", pk, 2000, false, "");
     try std.testing.expect(id1 != id2);
 }
 
@@ -538,8 +550,8 @@ test "Store getUserByCallsign returns first match" {
     defer store_inst.deinit();
 
     const pk = [_]u8{0x44} ** 32;
-    _ = try store_inst.addUser("brad", "KE8WIF", pk, 1000, false);
-    _ = try store_inst.addUser("op", "KE8WIF", pk, 2000, false);
+    _ = try store_inst.addUser("brad", "KE8WIF", pk, 1000, false, "");
+    _ = try store_inst.addUser("op", "KE8WIF", pk, 2000, false, "");
 
     var u = store_inst.getUserByCallsign("KE8WIF").?;
     defer u.deinit(allocator);
@@ -552,7 +564,7 @@ test "Store getUserById" {
     defer store_inst.deinit();
 
     const pk = [_]u8{0x55} ** 32;
-    const id = try store_inst.addUser("op", "N0CALL", pk, 1000, false);
+    const id = try store_inst.addUser("op", "N0CALL", pk, 1000, false, "");
 
     var u = store_inst.getUserById(id).?;
     defer u.deinit(allocator);

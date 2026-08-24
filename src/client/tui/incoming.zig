@@ -244,7 +244,7 @@ fn storeUserInfo(ctx: *AppContext, payload: []const u8) void {
     defer message_frame.deinitPayload(allocator, decoded.?);
 
     const ui = decoded.?.user_info;
-    ctx.store.upsertUserWithId(ui.id, ui.handle, ui.callsign, ui.public_key, ui.registered_datetime, ui.is_sysop) catch return;
+    ctx.store.upsertUserWithId(ui.id, ui.handle, ui.callsign, ui.public_key, ui.registered_datetime, ui.is_sysop, ui.avatar) catch return;
 
     if (ctx.identity.my_user_id != null and ctx.identity.my_user_id.? == ui.id) {
         ctx.identity.my_is_sysop = ui.is_sysop;

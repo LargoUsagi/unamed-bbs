@@ -43,6 +43,7 @@ const h_motd_request = @import("handlers/motd_request.zig");
 const h_motd = @import("handlers/motd.zig");
 const h_chat = @import("handlers/chat.zig");
 const h_chat_history_request = @import("handlers/chat_history_request.zig");
+const h_avatar_update = @import("handlers/avatar_update.zig");
 
 /// Owns the receive-side state: the multipart reassembler. Exposed as a `var`
 /// in `main`; the loop calls `drain` then `processTimeouts`. Reads the
@@ -165,6 +166,7 @@ fn dispatch(ctx: *const ServerCtx, im: transport_mod.IncomingMessage) !void {
         .motd => try h_motd.handle(ctx, im),
         .chat => try h_chat.handle(ctx, im),
         .chat_history_request => try h_chat_history_request.handle(ctx, im),
+        .avatar_update => try h_avatar_update.handle(ctx, im),
         else => {},
     }
 }

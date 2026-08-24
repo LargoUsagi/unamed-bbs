@@ -63,10 +63,16 @@ pub const User = struct {
     public_key: [32]u8,
     registered_datetime: u64,
     is_sysop: bool = false,
+    /// 11×7 ASCII art avatar (7 lines joined by '\n', '█'/' ' cells). The
+    /// server computes this once at registration (from the public key) and
+    /// replicates it verbatim to clients via `user_info`. Empty for legacy
+    /// rows that predate the column.
+    avatar: []u8 = &.{},
 
     pub fn deinit(self: *User, allocator: std.mem.Allocator) void {
         allocator.free(self.handle);
         allocator.free(self.callsign);
+        if (self.avatar.len != 0) allocator.free(self.avatar);
     }
 };
 
@@ -138,7 +144,8 @@ pub fn createUsersTable(db: *sqlite.Db) void {
             "id INTEGER PRIMARY KEY AUTOINCREMENT, " ++
             "handle TEXT, callsign TEXT, public_key BLOB, " ++
             "registered_datetime INTEGER NOT NULL DEFAULT 0, " ++
-            "is_sysop INTEGER NOT NULL DEFAULT 0" ++
+            "is_sysop INTEGER NOT NULL DEFAULT 0, " ++
+            "avatar TEXT NOT NULL DEFAULT ''" ++
             ")",
         .{},
         .{},
@@ -237,7 +244,8 @@ pub fn migrateBulletinsSchema(db: *sqlite.Db) void {
 }
 
 /// Drop the legacy `authors` table (renamed to `users`) if it exists, and
-/// add the `is_sysop` column to `users` if it's missing (older schemas).
+/// add the `is_sysop` and `avatar` columns to `users` if they're missing
+/// (older schemas).
 pub fn migrateUsersSchema(db: *sqlite.Db) void {
     db.exec("DROP TABLE IF EXISTS authors", .{}, .{}) catch {};
     // Add is_sysop column if it doesn't exist.
@@ -249,6 +257,9 @@ pub fn migrateUsersSchema(db: *sqlite.Db) void {
     defer std.heap.page_allocator.free(r.sql);
     if (std.mem.indexOf(u8, r.sql, "is_sysop") == null) {
         db.exec("ALTER TABLE users ADD COLUMN is_sysop INTEGER NOT NULL DEFAULT 0", .{}, .{}) catch {};
+    }
+    if (std.mem.indexOf(u8, r.sql, "avatar") == null) {
+        db.exec("ALTER TABLE users ADD COLUMN avatar TEXT NOT NULL DEFAULT ''", .{}, .{}) catch {};
     }
 }
 
@@ -573,6 +584,7 @@ pub fn freeChatRecordList(allocator: std.mem.Allocator, list: []const ChatRecord
 /// Register a new user. Returns the assigned u16 id. Errors if a user with
 /// the same handle already exists (unique index enforces this).
 /// `registered_datetime` is the server-set Unix epoch timestamp (seconds).
+/// `avatar` is the server-computed ASCII art avatar string (may be empty).
 pub fn addUser(
     db: *sqlite.Db,
     handle: []const u8,
@@ -580,14 +592,16 @@ pub fn addUser(
     public_key: [32]u8,
     registered_datetime: u64,
     is_sysop: bool,
+    avatar: []const u8,
 ) !u16 {
-    var stmt = try db.prepare("INSERT INTO users (handle, callsign, public_key, registered_datetime, is_sysop) VALUES (?, ?, ?, ?, ?)");
+    var stmt = try db.prepare("INSERT INTO users (handle, callsign, public_key, registered_datetime, is_sysop, avatar) VALUES (?, ?, ?, ?, ?, ?)");
     defer stmt.deinit();
-    try stmt.exec(.{}, .{ handle, callsign, sqlite.Blob{ .data = &public_key }, registered_datetime, if (is_sysop) @as(u8, 1) else @as(u8, 0) });
+    try stmt.exec(.{}, .{ handle, callsign, sqlite.Blob{ .data = &public_key }, registered_datetime, if (is_sysop) @as(u8, 1) else @as(u8, 0), avatar });
     return @intCast(db.getLastInsertRowID());
 }
 
-/// Update an existing user's callsign, public key, and registered_datetime by id.
+/// Update an existing user's callsign, public key, registered_datetime, and
+/// avatar by id.
 pub fn updateUser(
     db: *sqlite.Db,
     id: u16,
@@ -595,10 +609,11 @@ pub fn updateUser(
     public_key: [32]u8,
     registered_datetime: u64,
     is_sysop: bool,
+    avatar: []const u8,
 ) !void {
-    var stmt = try db.prepare("UPDATE users SET callsign = ?, public_key = ?, registered_datetime = ?, is_sysop = ? WHERE id = ?");
+    var stmt = try db.prepare("UPDATE users SET callsign = ?, public_key = ?, registered_datetime = ?, is_sysop = ?, avatar = ? WHERE id = ?");
     defer stmt.deinit();
-    try stmt.exec(.{}, .{ callsign, sqlite.Blob{ .data = &public_key }, registered_datetime, if (is_sysop) @as(u8, 1) else @as(u8, 0), id });
+    try stmt.exec(.{}, .{ callsign, sqlite.Blob{ .data = &public_key }, registered_datetime, if (is_sysop) @as(u8, 1) else @as(u8, 0), avatar, id });
 }
 
 /// Insert or replace a user by id (used by the client to cache user info
@@ -611,31 +626,40 @@ pub fn upsertUserWithId(
     public_key: [32]u8,
     registered_datetime: u64,
     is_sysop: bool,
+    avatar: []const u8,
 ) !void {
     var stmt = try db.prepare(
-        "INSERT OR REPLACE INTO users (id, handle, callsign, public_key, registered_datetime, is_sysop) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO users (id, handle, callsign, public_key, registered_datetime, is_sysop, avatar) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
     defer stmt.deinit();
-    try stmt.exec(.{}, .{ id, handle, callsign, sqlite.Blob{ .data = &public_key }, registered_datetime, if (is_sysop) @as(u8, 1) else @as(u8, 0) });
+    try stmt.exec(.{}, .{ id, handle, callsign, sqlite.Blob{ .data = &public_key }, registered_datetime, if (is_sysop) @as(u8, 1) else @as(u8, 0), avatar });
+}
+
+/// Update only the avatar column for a user (used by the `avatar_update`
+/// handler). Cheaper than a full `updateUser` when only the avatar changed.
+pub fn updateUserAvatar(db: *sqlite.Db, id: u16, avatar: []const u8) !void {
+    var stmt = try db.prepare("UPDATE users SET avatar = ? WHERE id = ?");
+    defer stmt.deinit();
+    try stmt.exec(.{}, .{ avatar, id });
 }
 
 /// Look up a user by handle. Caller owns the result and must call deinit().
 pub fn getUserByHandle(db: *sqlite.Db, allocator: std.mem.Allocator, handle: []const u8) ?User {
-    var stmt = db.prepare("SELECT id, handle, callsign, public_key, registered_datetime, is_sysop FROM users WHERE handle = ?") catch return null;
+    var stmt = db.prepare("SELECT id, handle, callsign, public_key, registered_datetime, is_sysop, avatar FROM users WHERE handle = ?") catch return null;
     defer stmt.deinit();
     return stmt.oneAlloc(User, allocator, .{}, .{handle}) catch null;
 }
 
 /// Look up a user by callsign (first match; callsign is not unique).
 pub fn getUserByCallsign(db: *sqlite.Db, allocator: std.mem.Allocator, callsign: []const u8) ?User {
-    var stmt = db.prepare("SELECT id, handle, callsign, public_key, registered_datetime, is_sysop FROM users WHERE callsign = ? LIMIT 1") catch return null;
+    var stmt = db.prepare("SELECT id, handle, callsign, public_key, registered_datetime, is_sysop, avatar FROM users WHERE callsign = ? LIMIT 1") catch return null;
     defer stmt.deinit();
     return stmt.oneAlloc(User, allocator, .{}, .{callsign}) catch null;
 }
 
 /// Look up a user by id. Caller owns the result and must call deinit().
 pub fn getUserById(db: *sqlite.Db, allocator: std.mem.Allocator, id: u16) ?User {
-    var stmt = db.prepare("SELECT id, handle, callsign, public_key, registered_datetime, is_sysop FROM users WHERE id = ?") catch return null;
+    var stmt = db.prepare("SELECT id, handle, callsign, public_key, registered_datetime, is_sysop, avatar FROM users WHERE id = ?") catch return null;
     defer stmt.deinit();
     return stmt.oneAlloc(User, allocator, .{}, .{id}) catch null;
 }
@@ -652,7 +676,7 @@ pub fn countUsers(db: *sqlite.Db) usize {
 /// slice and each `User`'s `handle`/`callsign`; call `freeUserList` to free.
 pub fn listAllUsers(db: *sqlite.Db, allocator: std.mem.Allocator) ![]User {
     var stmt = try db.prepare(
-        "SELECT id, handle, callsign, public_key, registered_datetime, is_sysop FROM users ORDER BY id ASC",
+        "SELECT id, handle, callsign, public_key, registered_datetime, is_sysop, avatar FROM users ORDER BY id ASC",
     );
     defer stmt.deinit();
     return try stmt.all(User, allocator, .{}, .{});
@@ -746,7 +770,7 @@ test "shared addUser and getUserByHandle" {
     createSchema(&db);
 
     const pk = [_]u8{0xAA} ** 32;
-    const id = try addUser(&db, "brad", "KE8WIF", pk, 1000, false);
+    const id = try addUser(&db, "brad", "KE8WIF", pk, 1000, false, "");
     try std.testing.expect(id >= 1);
 
     var u = getUserByHandle(&db, allocator, "brad").?;
@@ -754,6 +778,7 @@ test "shared addUser and getUserByHandle" {
     try std.testing.expectEqualStrings("brad", u.handle);
     try std.testing.expectEqualSlices(u8, &pk, &u.public_key);
     try std.testing.expectEqual(@as(u64, 1000), u.registered_datetime);
+    try std.testing.expectEqual(@as(usize, 0), u.avatar.len);
 }
 
 test "shared listAllUsers returns users sorted by id ascending" {
@@ -771,9 +796,9 @@ test "shared listAllUsers returns users sorted by id ascending" {
     const pk_a = [_]u8{0xAA} ** 32;
     const pk_b = [_]u8{0xBB} ** 32;
     const pk_c = [_]u8{0xCC} ** 32;
-    _ = try addUser(&db, "brad", "KE8WIF", pk_a, 1000, true);
-    _ = try addUser(&db, "nina", "N0CALL", pk_b, 2000, false);
-    _ = try addUser(&db, "zoe", "W1ABC", pk_c, 3000, false);
+    _ = try addUser(&db, "brad", "KE8WIF", pk_a, 1000, true, "");
+    _ = try addUser(&db, "nina", "N0CALL", pk_b, 2000, false, "");
+    _ = try addUser(&db, "zoe", "W1ABC", pk_c, 3000, false, "");
     try std.testing.expectEqual(@as(usize, 3), countUsers(&db));
 
     const users = try listAllUsers(&db, allocator);

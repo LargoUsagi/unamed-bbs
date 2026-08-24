@@ -186,9 +186,9 @@ pub const Store = struct {
 
     /// Insert or replace a user by id. Used to cache user info received from
     /// the server (via `user_info` broadcasts). The client does not own the
-    /// `registered_datetime` — the server is authoritative.
-    pub fn upsertUserWithId(self: *Store, id: u16, handle: []const u8, callsign: []const u8, public_key: [32]u8, registered_datetime: u64, is_sysop: bool) !void {
-        return store.upsertUserWithId(&self.db, id, handle, callsign, public_key, registered_datetime, is_sysop);
+    /// `registered_datetime` or `avatar` — the server is authoritative.
+    pub fn upsertUserWithId(self: *Store, id: u16, handle: []const u8, callsign: []const u8, public_key: [32]u8, registered_datetime: u64, is_sysop: bool, avatar: []const u8) !void {
+        return store.upsertUserWithId(&self.db, id, handle, callsign, public_key, registered_datetime, is_sysop, avatar);
     }
 
     /// Count of registered users in the cache.

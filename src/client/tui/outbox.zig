@@ -174,6 +174,7 @@ fn freePayloadSlices(payload: message_frame.Payload) void {
         .packet_request => |pr| if (pr.packet_numbers.len > 0) page.free(pr.packet_numbers),
         .motd => |m| if (m.text.len > 0) page.free(m.text),
         .chat => |c| if (c.text.len > 0) page.free(c.text),
+        .avatar_update => |au| if (au.avatar.len > 0) page.free(au.avatar),
         else => {},
     }
 }
@@ -406,6 +407,29 @@ pub fn sendBulletinListRequest(ctx: *AppContext) void {
         .payload = .{ .bulletin_list_request = .{ .page = 0, .page_size = 5 } },
     };
     spawnAndSet(ctx, args, "Requesting bulletins (page 0, 5 entries)...");
+}
+
+/// Send an `avatar_update` to the server with new avatar text. The server
+/// identifies the sender by signature and re-broadcasts the updated
+/// `user_info`. `avatar_text` is duped here so the caller's slice is decoupled
+/// from the background send lifetime.
+pub fn sendAvatarUpdate(ctx: *AppContext, avatar_text: []const u8) void {
+    const p = prepareSend(ctx) orelse return;
+    const page = std.heap.page_allocator;
+    const avatar_copy = page.dupe(u8, avatar_text) catch {
+        page.free(p.host);
+        ctx.status = "Out of memory.";
+        return;
+    };
+    const args = SendArgs{
+        .transport = ctx.inbox.transport.?,
+        .host = p.host,
+        .port = p.port,
+        .kport = p.kport,
+        .secret_key = p.secret_key,
+        .payload = .{ .avatar_update = .{ .avatar = avatar_copy } },
+    };
+    spawnAndSet(ctx, args, "Updating avatar...");
 }
 
 pub fn requestMotd(ctx: *AppContext) void {

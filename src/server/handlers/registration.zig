@@ -92,9 +92,11 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
             return;
         }
 
-        // Authorized by the current owner — apply the update.
+        // Authorized by the current owner — apply the update. The avatar is
+        // preserved across re-registration (the user may have customized it);
+        // only callsign/key/datetime are refreshed.
         const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
-        ctx.store.updateUser(existing.id, cs, reg.public_key, now_secs, existing.is_sysop) catch |err| {
+        ctx.store.updateUser(existing.id, cs, reg.public_key, now_secs, existing.is_sysop, existing.avatar) catch |err| {
             try ctx.stderr.print("  error: failed to update user: {s}\n", .{@errorName(err)});
             try ctx.stderr.flush();
             outbox.sendRegistrationAck(ctx, im.port, callsign, false, 0) catch {};
@@ -129,7 +131,10 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
         const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
         // The first registered user becomes the sysop.
         const is_sysop = ctx.store.countUsers() == 0;
-        const user_id = ctx.store.addUser(reg.handle, cs, reg.public_key, now_secs, is_sysop) catch |err| {
+        // Compute the default avatar once, server-side, from the public key.
+        const avatar_str = kiss.avatar.generateFromKey(allocator, reg.public_key) catch &.{};
+        defer if (avatar_str.len != 0) allocator.free(avatar_str);
+        const user_id = ctx.store.addUser(reg.handle, cs, reg.public_key, now_secs, is_sysop, avatar_str) catch |err| {
             try ctx.stderr.print("  error: failed to store user: {s}\n", .{@errorName(err)});
             try ctx.stderr.flush();
             outbox.sendRegistrationAck(ctx, im.port, callsign, false, 0) catch {};

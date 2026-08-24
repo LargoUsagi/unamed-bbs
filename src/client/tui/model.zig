@@ -31,6 +31,7 @@ const request_by_id = @import("screens/request_by_id.zig");
 const status_popup = @import("screens/status_popup.zig");
 const notice_popup = @import("screens/notice_popup.zig");
 const user_directory = @import("screens/user_directory.zig");
+const user_detail = @import("screens/user_detail.zig");
 
 pub const Msg = types.Msg;
 
@@ -67,6 +68,7 @@ pub fn init(self: *Model, ctx: *zz.Context) zz.Cmd(Msg) {
     status_popup.init(&self.ctx);
     notice_popup.init(&self.ctx);
     user_directory.init(&self.ctx);
+    user_detail.init(&self.ctx);
 
     // Create the screen stack with the landing screen as the root.
     self.stack = zz.ScreenStack.init(ctx.persistent_allocator);
@@ -197,6 +199,7 @@ pub fn deinit(self: *Model) void {
     status_popup.deinit();
     notice_popup.deinit();
     user_directory.deinit();
+    user_detail.deinit();
     self.ctx.deinit();
 }
 

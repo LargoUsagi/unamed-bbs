@@ -69,6 +69,7 @@ pub fn broadcastUserInfo(
         .callsign = user.callsign,
         .public_key = user.public_key,
         .is_sysop = user.is_sysop,
+        .avatar = user.avatar,
     } };
 
     try send(ctx, port, ui_payload, .user_info, route);

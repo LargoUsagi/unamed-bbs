@@ -1,8 +1,17 @@
 //! Account screen — shown when the client is registered and has a working
 //! signing key (restored from the persisted secret key on launch). Displays
-//! the user's profile (handle, callsign, user id, key fingerprint) and a
-//! Logout button. Logout asks for confirmation via the modal popup, then
-//! deletes the local SQLite database and quits the application.
+//! the user's profile (handle, callsign, user id, key fingerprint) and an
+//! avatar editor, plus a Logout button. Logout asks for confirmation via the
+//! modal popup, then deletes the local SQLite database and quits the
+//! application.
+//!
+//! Avatar editing: a 7-row TextArea is pre-populated with the current avatar
+//! (received from the server via `user_info`). The user edits it with
+//! Up/Down/Left/Right (Tab cycles to the next field, so Up/Down stay available
+//! for cursor movement within the grid). "Save Avatar" sends an `avatar_update`
+//! to the server (signed); the server re-broadcasts the updated `user_info`.
+//! "Reset to Default" regenerates the avatar locally from the public key and
+//! repopulates the TextArea — the user then presses Save to commit it.
 //!
 //! This is the "logged-in" counterpart to the Register/Login screen. The
 //! landing page routes here when `my_user_id != null` and
@@ -13,6 +22,8 @@
 const std = @import("std");
 const zz = @import("zigzag");
 
+const bbs = @import("bbs");
+
 const render = @import("../render.zig");
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
@@ -21,7 +32,10 @@ const logout_confirm_screen = @import("logout_confirm.zig");
 
 pub const State = struct {
     ctx: *app.AppContext = undefined,
-    logout_form: zz.Form(1) = undefined,
+    form: zz.Form(4) = undefined,
+    avatar_input: zz.TextArea = undefined,
+    save_avatar_button: Button = .{ .label = "Save Avatar" },
+    reset_avatar_button: Button = .{ .label = "Reset to Default" },
     logout_button: Button = .{ .label = "Logout" },
 };
 
@@ -29,18 +43,30 @@ pub var state = State{};
 
 pub fn init(ctx: *app.AppContext) void {
     state.ctx = ctx;
-    state.logout_form = zz.Form(1).init();
-    state.logout_form.title = "Account";
-    state.logout_form.addField("", &state.logout_button, .{ .required = false });
-    state.logout_form.submit_keys = &.{};
-    state.logout_form.cancel_keys = &.{};
-    _ = state.logout_form.focus_group.addNextKey(.{ .key = .down });
-    _ = state.logout_form.focus_group.addPrevKey(.{ .key = .up });
-    state.logout_form.hint_text = "";
-    state.logout_form.initFocus();
+    state.avatar_input = zz.TextArea.init(std.heap.page_allocator);
+    state.avatar_input.placeholder = "11x7 avatar (█ and space)";
+    state.avatar_input.word_wrap = false;
+    state.avatar_input.width = 11;
+    state.avatar_input.height = 7;
+
+    state.form = zz.Form(4).init();
+    state.form.title = "Account";
+    state.form.addField("Avatar", &state.avatar_input, .{ .required = false });
+    state.form.addField("", &state.save_avatar_button, .{ .required = false });
+    state.form.addField("", &state.reset_avatar_button, .{ .required = false });
+    state.form.addField("", &state.logout_button, .{ .required = false });
+    state.form.submit_keys = &.{zz.KeyEvent.ctrl('s')};
+    state.form.cancel_keys = &.{};
+    // Deliberately do NOT register Up/Down as focus-nav keys so they remain
+    // available for cursor movement inside the 7-row avatar TextArea. Tab /
+    // Shift+Tab (the focus-group defaults) cycle between fields.
+    state.form.hint_text = "Ctrl+S: save avatar  Tab: next field  Esc: back";
+    state.form.initFocus();
 }
 
-pub fn deinit() void {}
+pub fn deinit() void {
+    state.avatar_input.deinit();
+}
 
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
@@ -51,12 +77,62 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         return .{ .push = @import("settings.zig").screen };
     }
 
-    _ = state.logout_form.handleKey(k);
+    _ = state.form.handleKey(k);
+
+    if (state.form.isSubmitted()) {
+        state.form.reset();
+        if (saveAvatar()) {
+            // Stay on screen; the server will re-broadcast user_info.
+        }
+        return .none;
+    }
+    if (state.save_avatar_button.pressed) {
+        state.save_avatar_button.pressed = false;
+        _ = saveAvatar();
+        return .none;
+    }
+    if (state.reset_avatar_button.pressed) {
+        state.reset_avatar_button.pressed = false;
+        resetAvatarToDefault();
+        return .none;
+    }
     if (state.logout_button.pressed) {
         state.logout_button.pressed = false;
         return .{ .push = logout_confirm_screen.screen };
     }
     return .none;
+}
+
+/// Read the TextArea content and send an `avatar_update` to the server.
+/// Returns true if the send was kicked off.
+fn saveAvatar() bool {
+    const ctx = state.ctx;
+    const text = state.avatar_input.getValue(std.heap.page_allocator) catch {
+        ctx.status = "Out of memory.";
+        return false;
+    };
+    defer std.heap.page_allocator.free(text);
+    outbox.sendAvatarUpdate(ctx, text);
+    return ctx.outbox.busy;
+}
+
+/// Regenerate the default avatar from the local public key and populate the
+/// TextArea. The user still needs to press "Save Avatar" to commit it to the
+/// server — this is a local preview only.
+fn resetAvatarToDefault() void {
+    const ctx = state.ctx;
+    const kp = ctx.identity.keypair orelse {
+        ctx.status = "No signing key — cannot generate default avatar.";
+        return;
+    };
+    const pk = kp.publicKeyBytes();
+    const default_avatar = bbs.avatar.generateFromKey(std.heap.page_allocator, pk) catch {
+        ctx.status = "Out of memory generating avatar.";
+        return;
+    };
+    defer std.heap.page_allocator.free(default_avatar);
+    state.avatar_input.setValue(default_avatar) catch {};
+    ctx.status = "Avatar reset to default — press Save Avatar to commit.";
 }
 
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -70,8 +146,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     info_style = info_style.fg(zz.Color.gray(12));
     info_style = info_style.inline_style(true);
 
-    const logout_form_view = try state.logout_form.view(alloc);
-    defer alloc.free(logout_form_view);
+    const form_view = try state.form.view(alloc);
+    defer alloc.free(form_view);
 
     // Look up the user info from the local cache.
     var user_info_line: []const u8 = "";
@@ -120,13 +196,13 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     help_style = help_style.inline_style(true);
     const help = try help_style.render(
         alloc,
-        "Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
+        "Ctrl+S/Save Avatar: send  Reset: regenerate from key  Tab: next field  Up/Dn/L/R: edit avatar  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
     );
 
     const content = try std.fmt.allocPrint(
         alloc,
         "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
-        .{ styled_conn, styled_status, styled_bbs, logout_form_view, info, styled_cs, help },
+        .{ styled_conn, styled_status, styled_bbs, form_view, info, styled_cs, help },
     );
     return render.fillTerminal(alloc, zz_ctx, content);
 }
@@ -134,15 +210,17 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
 fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
     _ = ptr;
     const ctx = state.ctx;
-    state.logout_form.initFocus();
-    ctx.status = "Logged in — press Logout to clear local data and exit.";
+    state.form.initFocus();
+    ctx.status = "Logged in — edit avatar or press Logout.";
 
-    // If the user info is not cached locally, request it from the server.
+    // Pre-populate the avatar editor with the current avatar from the cache.
     if (ctx.identity.my_user_id) |uid| {
         if (ctx.store.getUserById(uid)) |user| {
             var mut_user = user;
-            mut_user.deinit(ctx.store.allocator);
+            defer mut_user.deinit(ctx.store.allocator);
+            state.avatar_input.setValue(mut_user.avatar) catch {};
         } else {
+            // User info not cached yet — request it so the avatar arrives.
             const ids = [_]u16{uid};
             outbox.sendUserInfoRequest(ctx, &ids);
             ctx.status = "Requesting user info...";
