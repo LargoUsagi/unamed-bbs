@@ -17,6 +17,22 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: actions/cache@v6
+        with:
+          path: |
+            zig-pkg
+            .zig-cache
+          key: zig-deps-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            zig-deps-${{ runner.os }}-
+      - name: Fetch dependencies
+        run: |
+          for i in 1 2 3 4 5; do
+            if zig build --fetch; then break; fi
+            echo "::warning::Fetch attempt $i failed, retrying in $((i * 10))s..."
+            sleep $((i * 10))
+          done
+          zig build --fetch
       - run: zig build test
 
   release:
@@ -30,6 +46,22 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: actions/cache@v6
+        with:
+          path: |
+            zig-pkg
+            .zig-cache
+          key: zig-deps-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            zig-deps-${{ runner.os }}-
+      - name: Fetch dependencies
+        run: |
+          for i in 1 2 3 4 5; do
+            if zig build --fetch; then break; fi
+            echo "::warning::Fetch attempt $i failed, retrying in $((i * 10))s..."
+            sleep $((i * 10))
+          done
+          zig build --fetch
       - uses: goreleaser/goreleaser-action@v7
         with:
           install-only: true
