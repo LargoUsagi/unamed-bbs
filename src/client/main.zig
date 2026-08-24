@@ -17,6 +17,11 @@ const Options = struct {
     duplicate_connect_notice: ?[]const u8 = null,
     callsign: []const u8 = default_callsign,
     key_passphrase: ?[]const u8 = null,
+    /// Path to an Ed25519 secret key file (PEM PKCS#8, OpenSSH, or raw 64
+    /// bytes; auto-detected). Mutually exclusive with `key_passphrase` — the
+    /// user either derives a key from a passphrase or brings their own
+    /// pre-generated key file.
+    key_file: ?[]const u8 = null,
     /// Handle to pre-fill the registration form and/or salt the KDF.
     handle: ?[]const u8 = null,
     /// Hex-encoded Ed25519 public key (64 hex chars) of the BBS to trust for
@@ -41,6 +46,8 @@ const usage =
     \\  --callsign <str>    Source callsign for AX.25 header (default: NOCALL)
     \\  --handle <str>      Handle for registration (salts the KDF with --key)
     \\  --key <passphrase>  Derive Ed25519 signing key from passphrase (HKDF-SHA256)
+    \\  --key-file <path>  Load Ed25519 secret key from a file (PEM PKCS#8,
+    \\                      OpenSSH, or raw 64 bytes). Mutually exclusive with --key.
     \\  --bbs-key <hex>     Hex Ed25519 public key (64 chars) of the BBS to trust.
     \\                      Hard-locks the server key; if omitted the client
     \\                      trusts the public key advertised by any server.
@@ -97,6 +104,7 @@ pub fn main(init: std.process.Init) !void {
         .callsign = o.callsign,
         .handle = o.handle,
         .key_passphrase = o.key_passphrase,
+        .key_file = o.key_file,
         .bbs_key_hex = o.bbs_key_hex,
         .in_memory = o.in_memory,
     });
@@ -136,6 +144,10 @@ fn parseArgs(arena: std.mem.Allocator, args: []const [:0]const u8) !ParsedOption
             i += 1;
             if (i >= args.len) return error.MissingValueForKey;
             opts.key_passphrase = args[i];
+        } else if (std.mem.eql(u8, a, "--key-file")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValueForKeyFile;
+            opts.key_file = args[i];
         } else if (std.mem.eql(u8, a, "--bbs-key")) {
             i += 1;
             if (i >= args.len) return error.MissingValueForBbsKey;
@@ -147,6 +159,11 @@ fn parseArgs(arena: std.mem.Allocator, args: []const [:0]const u8) !ParsedOption
         } else {
             return error.UnexpectedPositionalArg;
         }
+    }
+    // --key and --key-file are alternatives (derive vs. bring-your-own);
+    // passing both is ambiguous and rejected.
+    if (opts.key_passphrase != null and opts.key_file != null) {
+        return error.KeyAndKeyFileBothGiven;
     }
     return .{ .run = opts };
 }
@@ -243,6 +260,22 @@ test "parseArgs --callsign and --handle" {
     try std.testing.expectEqualStrings("KE8WIF", o.callsign);
     try std.testing.expect(o.handle != null);
     try std.testing.expectEqualStrings("myhandle", o.handle.?);
+}
+
+test "parseArgs --key-file sets key_file and leaves key_passphrase null" {
+    const allocator = std.testing.allocator;
+    const args = [_][:0]const u8{ "--key-file", "/tmp/my.key" };
+    const result = try parseArgs(allocator, &args);
+    const o = result.run;
+    try std.testing.expect(o.key_file != null);
+    try std.testing.expectEqualStrings("/tmp/my.key", o.key_file.?);
+    try std.testing.expect(o.key_passphrase == null);
+}
+
+test "parseArgs rejects --key and --key-file together" {
+    const allocator = std.testing.allocator;
+    const args = [_][:0]const u8{ "--key", "mypass", "--key-file", "/tmp/my.key" };
+    try std.testing.expectError(error.KeyAndKeyFileBothGiven, parseArgs(allocator, &args));
 }
 
 test "simple test" {

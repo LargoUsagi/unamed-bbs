@@ -112,8 +112,22 @@ pub fn main(init: std.process.Init) !void {
     }
     const o = parsed.run;
 
-    // Set up signing key.
-    const kp: ?signing.KeyPair = if (o.key_passphrase) |passphrase|
+    // Set up signing key. The key is either derived from a passphrase
+    // (`--key`) or loaded from a file (`--key-file`) in PEM (PKCS#8),
+    // OpenSSH, or raw 64-byte format; the two flags are mutually exclusive
+    // (enforced in cli.parseArgs).
+    const kp: ?signing.KeyPair = if (o.key_file) |path|
+        signing.loadSecretKey(io, path) catch |err| {
+            const hint = switch (err) {
+                error.EncryptedKeyNotSupported => " (encrypted keys are not supported)",
+                error.NotAnEd25519Key => " (not an Ed25519 key)",
+                else => "",
+            };
+            try stderr.print("error: failed to load key file '{s}': {s}{s}\n", .{ path, @errorName(err), hint });
+            try stderr.flush();
+            return;
+        }
+    else if (o.key_passphrase) |passphrase|
         signing.KeyPair.fromPassphrase(passphrase) catch |err| {
             try stderr.print("error: key derivation failed: {s}\n", .{@errorName(err)});
             try stderr.flush();

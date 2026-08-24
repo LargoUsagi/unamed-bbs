@@ -31,6 +31,11 @@ pub const Identity = struct {
     /// so commands are blocked until a valid key exists.
     keypair: ?signing.KeyPair = null,
     key_has_passphrase: bool,
+    /// True when the signing key was loaded from a file via `--key-file`
+    /// (never derived from a passphrase). File-sourced keys are never copied
+    /// into the SQLite store — the user manages the key file and is expected
+    /// to pass `--key-file` again on the next launch.
+    key_from_file: bool,
     bbs_key: ?[signing.public_key_len]u8,
     bbs_key_locked: bool,
     my_user_id: ?u16,
@@ -105,11 +110,46 @@ pub fn init(ctx: *AppContext, overrides: cli.TuiOverrides) void {
     // keypair stays `null` and outbound commands are blocked until the user
     // registers or logs in.
     id.key_from_ui = false;
+    id.key_from_file = false;
     id.remember_credentials = false;
     id.prefill_handle = overrides.handle;
     id.prefill_password = overrides.key_passphrase;
     id.handle_locked = overrides.handle != null;
-    if (overrides.key_passphrase) |passphrase| {
+    if (overrides.key_file) |path| {
+        // Bring-your-own key: load a PEM (PKCS#8), OpenSSH, or raw 64-byte
+        // Ed25519 secret key from a file. This is an explicit user action, so
+        // a load failure is surfaced rather than silently leaving the keypair
+        // null (which would look like "no key configured"). File keys are
+        // never persisted to the SQLite store (key_from_file stays true and
+        // key_from_ui stays false, so handleRegistrationAck's persistence
+        // guard excludes them).
+        id.key_from_file = true;
+        id.key_has_passphrase = false;
+        id.key_restored_from_store = true;
+        id.keypair = signing.loadSecretKey(ctx.io, path) catch |err| blk: {
+            id.key_restored_from_store = false;
+            const msg = switch (err) {
+                error.EncryptedKeyNotSupported => std.fmt.allocPrint(
+                    std.heap.page_allocator,
+                    "Key file '{s}' is encrypted; only unencrypted keys are supported",
+                    .{path},
+                ) catch "Encrypted key file not supported",
+                error.NotAnEd25519Key => std.fmt.allocPrint(
+                    std.heap.page_allocator,
+                    "Key file '{s}' does not contain an Ed25519 key",
+                    .{path},
+                ) catch "Key file is not an Ed25519 key",
+                else => std.fmt.allocPrint(
+                    std.heap.page_allocator,
+                    "Failed to load key file '{s}': {s}",
+                    .{ path, @errorName(err) },
+                ) catch "Failed to load key file",
+            };
+            ctx.status = msg;
+            ctx.startup_notice = msg;
+            break :blk null;
+        };
+    } else if (overrides.key_passphrase) |passphrase| {
         // A CLI-derived key is working/available, so treat it as restored —
         // a returning user with a stored my_user_id auto-logs-in to Account.
         id.key_has_passphrase = true;
@@ -142,8 +182,11 @@ pub fn init(ctx: *AppContext, overrides: cli.TuiOverrides) void {
 
     // --- Auto-register: CLI gave us a handle + key but no stored user id ---
     // The client will fire the registration automatically once connected (and
-    // the BBS key is known), via AppContext.tick.
-    id.auto_register = (overrides.handle != null and overrides.key_passphrase != null and id.my_user_id == null);
+    // the BBS key is known), via AppContext.tick. The key may come from a
+    // passphrase (`--key`) or a pre-generated key file (`--key-file`).
+    id.auto_register = (overrides.handle != null and
+        (overrides.key_passphrase != null or overrides.key_file != null) and
+        id.my_user_id == null);
 }
 
 /// Reset identity to a fresh state (used by logout).
@@ -151,6 +194,7 @@ pub fn reset(ctx: *AppContext) void {
     const id = &ctx.identity;
     id.my_user_id = null;
     id.key_from_ui = false;
+    id.key_from_file = false;
     id.remember_credentials = false;
     id.key_has_passphrase = false;
     id.key_restored_from_store = false;

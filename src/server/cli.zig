@@ -35,6 +35,9 @@ pub const Options = struct {
     listens: std.ArrayList(TransportSpec) = .empty,
     callsign: []const u8 = default_callsign,
     key_passphrase: ?[]const u8 = null,
+    /// Path to an Ed25519 secret key file (PEM PKCS#8, OpenSSH, or raw 64
+    /// bytes; auto-detected). Mutually exclusive with `key_passphrase`.
+    key_file: ?[]const u8 = null,
     store_path: []const u8 = default_store_path,
 };
 
@@ -63,6 +66,8 @@ pub const usage =
     \\  --kport <0-15>     Single AGWPE transport: radio channel (default: 0)
     \\  --callsign <str>   Server callsign for AX.25 header (default: NOCALL)
     \\  --key <passphrase> Derive Ed25519 signing key from passphrase
+    \\  --key-file <path>  Load Ed25519 secret key from a file (PEM PKCS#8,
+    \\                      OpenSSH, or raw 64 bytes). Mutually exclusive with --key.
     \\  --store <path>     Bulletin persistence file (default: bulletins.kblt)
     \\  -h, --help         Show this help
     \\
@@ -123,6 +128,10 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const [:0]const u8) !ParsedOp
             i += 1;
             if (i >= args.len) return error.MissingValueForKey;
             opts.key_passphrase = args[i];
+        } else if (std.mem.eql(u8, a, "--key-file")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValueForKeyFile;
+            opts.key_file = args[i];
         } else if (std.mem.eql(u8, a, "--store")) {
             i += 1;
             if (i >= args.len) return error.MissingValueForStore;
@@ -132,6 +141,12 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const [:0]const u8) !ParsedOp
         } else {
             return error.UnexpectedPositional;
         }
+    }
+
+    // --key and --key-file are alternatives (derive vs. bring-your-own);
+    // passing both is ambiguous and rejected.
+    if (opts.key_passphrase != null and opts.key_file != null) {
+        return error.KeyAndKeyFileBothGiven;
     }
 
     // If no connects or listens specified, add a default AGWPE connect.

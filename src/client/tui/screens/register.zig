@@ -75,10 +75,19 @@ pub fn init(ctx: *app.AppContext) void {
     state.form.title = "Register with BBS";
     state.form.addField("", &state.request_key_button, .{ .required = false });
     state.form.addField("Handle", &state.register_handle_input, .{ .required = true });
-    state.form.addField("Password", &state.password_input, .{ .required = true });
-    state.form.addField("Confirm", &state.confirm_password_input, .{ .required = true });
-    state.form.addField("", &state.remember_checkbox, .{ .required = false });
-    state.form.addField("", &state.register_button, .{ .required = false });
+    if (ctx.identity.key_from_file) {
+        // Bring-your-own key: the signing key is already loaded from a file,
+        // so the password/confirm fields (KDF inputs) are not needed. Submit
+        // uses the file-loaded keypair directly. The handle field stays at
+        // form index 1, so the locked-handle check (active == 1) still holds.
+        state.form.addField("", &state.remember_checkbox, .{ .required = false });
+        state.form.addField("", &state.register_button, .{ .required = false });
+    } else {
+        state.form.addField("Password", &state.password_input, .{ .required = true });
+        state.form.addField("Confirm", &state.confirm_password_input, .{ .required = true });
+        state.form.addField("", &state.remember_checkbox, .{ .required = false });
+        state.form.addField("", &state.register_button, .{ .required = false });
+    }
     state.form.submit_keys = &.{zz.KeyEvent.ctrl('s')};
     state.form.cancel_keys = &.{};
     _ = state.form.focus_group.addNextKey(.{ .key = .down });
@@ -172,18 +181,23 @@ fn tryRegister() bool {
         ctx.status = "Handle exceeds 20 characters.";
         return false;
     }
-    if (password.len < 8) {
-        ctx.status = "Password must be at least 8 characters.";
-        return false;
-    }
-    if (!std.mem.eql(u8, password, confirm)) {
-        ctx.status = "Passwords do not match.";
-        return false;
-    }
+    // The password/confirm fields and the KDF derivation are only used for
+    // passphrase-derived keys. When a key was loaded from a file (--key-file),
+    // the keypair is already set and no password is needed.
+    if (!ctx.identity.key_from_file) {
+        if (password.len < 8) {
+            ctx.status = "Password must be at least 8 characters.";
+            return false;
+        }
+        if (!std.mem.eql(u8, password, confirm)) {
+            ctx.status = "Passwords do not match.";
+            return false;
+        }
 
-    if (!identity_mod.deriveKeyFromHandleAndPassword(ctx, handle, password)) {
-        ctx.status = "Key derivation failed.";
-        return false;
+        if (!identity_mod.deriveKeyFromHandleAndPassword(ctx, handle, password)) {
+            ctx.status = "Key derivation failed.";
+            return false;
+        }
     }
 
     ctx.identity.remember_credentials = state.remember_checkbox.isChecked();
@@ -270,6 +284,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
 
     const my_id_line = if (login_mode)
         "Re-enter your handle and password to restore your key."
+    else if (ctx.identity.key_from_file)
+        "Key loaded from file — enter a handle and press Ctrl+S."
     else
         "Not registered yet";
     const info = try info_style.render(alloc, my_id_line);
@@ -290,7 +306,11 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         });
         cs_owned = true;
     } else {
-        cs_line = try std.fmt.allocPrint(alloc, "Callsign: {s}  Key: none (enter handle + password to derive)", .{ctx.connection.callsign_input.value.items});
+        const no_key_msg: []const u8 = if (ctx.identity.key_from_file)
+            "Key: none (key file failed to load)"
+        else
+            "Key: none (enter handle + password to derive)";
+        cs_line = try std.fmt.allocPrint(alloc, "Callsign: {s}  {s}", .{ ctx.connection.callsign_input.value.items, no_key_msg });
         cs_owned = true;
     }
     defer if (cs_owned) alloc.free(cs_line);
@@ -327,6 +347,8 @@ fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
     state.form.initFocus();
     if (isLoginMode(ctx)) {
         ctx.status = "Login — re-enter your handle and password to restore your key.";
+    } else if (ctx.identity.key_from_file) {
+        ctx.status = "Register — key loaded from file. Enter a handle and press Ctrl+S.";
     } else {
         ctx.status = if (ctx.connection.isConnected())
             "Register — enter a handle and press Ctrl+S."
