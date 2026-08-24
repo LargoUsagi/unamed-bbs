@@ -42,7 +42,6 @@ archives:
         formats:
           - zip
     files:
-      - AGENTS.md
       - build.zig
       - build.zig.zon
 
