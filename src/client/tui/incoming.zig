@@ -32,6 +32,7 @@ pub fn dispatchServerPayload(ctx: *AppContext, im: transport.IncomingMessage, pa
         .bulletin_response_list => storeBulletinResponseList(ctx, payload),
         .registration_ack => handleRegistrationAck(ctx, payload),
         .user_info => storeUserInfo(ctx, payload),
+        .user_info_list => storeUserInfoList(ctx, payload),
         .motd => handleMotd(ctx, payload),
         .request_status => handleRequestStatus(ctx, im, payload),
         .chat => storeChat(ctx, payload),
@@ -56,6 +57,7 @@ pub fn dispatchReassembled(ctx: *AppContext, msg_type: message_frame.MessageType
         .bulletin_response => storeBulletinResponse(ctx, payload),
         .bulletin_response_list => storeBulletinResponseList(ctx, payload),
         .user_info => storeUserInfo(ctx, payload),
+        .user_info_list => storeUserInfoList(ctx, payload),
         .motd => handleMotd(ctx, payload),
         .chat => storeChat(ctx, payload),
         else => {},
@@ -251,6 +253,25 @@ fn storeUserInfo(ctx: *AppContext, payload: []const u8) void {
     }
 
     ctx.store.upsertKnownKey(ui.callsign, ui.public_key) catch {};
+}
+
+/// Decode a batched `user_info_list` and upsert every entry, mirroring
+/// `storeUserInfo` per user. The server sends this in reply to a
+/// `user_info_request` (one message for N users instead of N messages).
+fn storeUserInfoList(ctx: *AppContext, payload: []const u8) void {
+    const allocator = std.heap.page_allocator;
+    const decoded = message_frame.decodePayload(allocator, .user_info_list, payload) catch return;
+    if (decoded == null) return;
+    defer message_frame.deinitPayload(allocator, decoded.?);
+
+    const list = decoded.?.user_info_list;
+    for (list.users) |ui| {
+        ctx.store.upsertUserWithId(ui.id, ui.handle, ui.callsign, ui.public_key, ui.registered_datetime, ui.is_sysop, ui.avatar) catch continue;
+        if (ctx.identity.my_user_id != null and ctx.identity.my_user_id.? == ui.id) {
+            ctx.identity.my_is_sysop = ui.is_sysop;
+        }
+        ctx.store.upsertKnownKey(ui.callsign, ui.public_key) catch {};
+    }
 }
 
 fn handleMotd(ctx: *AppContext, payload: []const u8) void {

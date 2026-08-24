@@ -32,6 +32,7 @@ pub const chat = @import("message_frame/chat.zig");
 pub const chat_history_request = @import("message_frame/chat_history_request.zig");
 const avatar_update = @import("message_frame/avatar_update.zig");
 const user_info = @import("message_frame/user_info.zig");
+const user_info_list = @import("message_frame/user_info_list.zig");
 const request_status = @import("message_frame/request_status.zig");
 const motd = @import("message_frame/motd.zig");
 
@@ -73,6 +74,7 @@ pub const Registration = message_type.Registration;
 pub const RegistrationAck = message_type.RegistrationAck;
 pub const UserInfo = message_type.UserInfo;
 pub const UserInfoRequest = message_type.UserInfoRequest;
+pub const UserInfoList = message_type.UserInfoList;
 pub const RequestStatus = message_type.RequestStatus;
 pub const RequestOutcome = message_type.RequestOutcome;
 pub const PacketRequest = message_type.PacketRequest;
@@ -190,4 +192,5 @@ test {
     _ = @import("message_frame/chat.zig");
     _ = @import("message_frame/chat_history_request.zig");
     _ = @import("message_frame/avatar_update.zig");
+    _ = @import("message_frame/user_info_list.zig");
 }

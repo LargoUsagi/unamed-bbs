@@ -135,6 +135,10 @@ pub fn msgTypeTag(im: *const transport.IncomingMessage) [4]u8 {
         .packet_request => "NAK",
         .chat => "CHT",
         .chat_history_request => "CHR",
+        .motd => "MOT",
+        .motd_request => "MRQ",
+        .avatar_update => "AVT",
+        .user_info_list => "ULS",
         else => "???",
     } else "RAW";
     @memcpy(buf[0..tag.len], tag);

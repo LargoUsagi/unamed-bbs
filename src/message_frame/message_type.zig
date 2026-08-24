@@ -25,6 +25,7 @@ const motd = @import("motd.zig");
 const chat_mod = @import("chat.zig");
 const chat_history_request_mod = @import("chat_history_request.zig");
 const avatar_update_mod = @import("avatar_update.zig");
+const user_info_list_mod = @import("user_info_list.zig");
 
 // Re-export the per-type structs so callers can import everything from one
 // place via `message_frame.Payload`, `message_frame.Bulletin`, etc.
@@ -51,6 +52,7 @@ pub const Motd = motd.Motd;
 pub const Chat = chat_mod.Chat;
 pub const ChatHistoryRequest = chat_history_request_mod.ChatHistoryRequest;
 pub const AvatarUpdate = avatar_update_mod.AvatarUpdate;
+pub const UserInfoList = user_info_list_mod.UserInfoList;
 pub const chat_max_text_len = chat_mod.max_chat_text_len;
 
 /// Message types carried by a `MessageFrame`. Wire values are u6 (stored in
@@ -80,6 +82,7 @@ pub const MessageType = enum(u6) {
     chat = 19,
     chat_history_request = 20,
     avatar_update = 21,
+    user_info_list = 22,
     _,
 };
 
@@ -116,6 +119,7 @@ pub const Payload = union(MessageType) {
     chat: Chat,
     chat_history_request: ChatHistoryRequest,
     avatar_update: AvatarUpdate,
+    user_info_list: UserInfoList,
 };
 
 /// Serialize a `Payload` into a flat byte buffer suitable for the
@@ -145,6 +149,7 @@ pub fn encodePayload(buf: []u8, payload: Payload) ?usize {
         .chat => |c| c.encode(buf),
         .chat_history_request => |r| r.encode(buf),
         .avatar_update => |au| au.encode(buf),
+        .user_info_list => |uil| uil.encode(buf),
     };
 }
 
@@ -249,6 +254,11 @@ pub fn decodePayload(allocator: std.mem.Allocator, msg_type: MessageType, data: 
             break :blk Payload{ .avatar_update = d };
         },
 
+        .user_info_list => blk: {
+            const d = (try user_info_list_mod.UserInfoList.decode(allocator, data)) orelse break :blk null;
+            break :blk Payload{ .user_info_list = d };
+        },
+
         _ => null,
     };
 }
@@ -277,6 +287,7 @@ pub fn deinitPayload(allocator: std.mem.Allocator, payload: Payload) void {
         .chat => |c| c.deinit(allocator),
         .chat_history_request => {},
         .avatar_update => |au| au.deinit(allocator),
+        .user_info_list => |uil| uil.deinit(allocator),
     }
 }
 

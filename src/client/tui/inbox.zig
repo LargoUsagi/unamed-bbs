@@ -218,6 +218,7 @@ pub const Inbox = struct {
             .bulletin_response_list,
             .registration_ack,
             .user_info,
+            .user_info_list,
             .request_status,
             .motd,
             .chat,
