@@ -441,7 +441,11 @@ pub fn requestMotd(ctx: *AppContext) void {
     if (ctx.identity.keypair == null) return;
 
     const now = @as(u64, @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds())));
-    if ((now - ctx.motd_timestamp) < motd_ttl) return;
+    if (now >= ctx.motd_timestamp) {
+        if (now - ctx.motd_timestamp < motd_ttl) return;
+    } else {
+        return;
+    }
 
     const page = std.heap.page_allocator;
     const host_copy = page.dupe(u8, ctx.outbox.hostSlice()) catch return;
@@ -458,6 +462,7 @@ pub fn requestMotd(ctx: *AppContext) void {
 
     ctx.outbox.busy = true;
     ctx.motd_timestamp = now;
+    ctx.store.setMotdTimestamp(now) catch {};
     ctx.status = "Requesting MOTD...";
 }
 

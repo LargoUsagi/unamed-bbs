@@ -262,9 +262,7 @@ fn handleMotd(ctx: *AppContext, payload: []const u8) void {
     const m = decoded.?.motd;
     if (ctx.motd_text) |old| allocator.free(@constCast(old));
     ctx.motd_text = allocator.dupe(u8, m.text) catch return;
-    ctx.motd_timestamp = @as(u64, @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds())));
     ctx.store.setMotd(m.text) catch {};
-    ctx.store.setMotdTimestamp(ctx.motd_timestamp) catch {};
 }
 
 fn handleRequestStatus(ctx: *AppContext, im: transport.IncomingMessage, payload: []const u8) void {

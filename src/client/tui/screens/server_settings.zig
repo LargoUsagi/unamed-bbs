@@ -111,37 +111,45 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const box_width: u16 = content_width;
     const inner_width: u16 = if (box_width > 4) box_width - 4 else 36;
 
+    // --- Current MOTD: label outside the box, MOTD rendered as markdown inside ---
+    // Mirrors the landing screen's MOTD box so the two screens look the same.
+    var label_style = zz.Style{};
+    label_style = label_style.bold(true);
+    label_style = label_style.fg(zz.Color.cyan);
+    label_style = label_style.inline_style(true);
 
+    var motd_label: []const u8 = "";
+    var motd_label_owned: bool = false;
+    var motd_box: []const u8 = "";
+    var motd_box_owned: bool = false;
+    defer if (motd_label_owned) alloc.free(motd_label);
+    defer if (motd_box_owned) alloc.free(motd_box);
 
-    // Show current MOTD if available.
-    var current_motd_line: []const u8 = "";
-    var current_motd_owned: bool = false;
     if (ctx.motd_text) |mt| {
-        current_motd_line = try std.fmt.allocPrint(alloc, "Current MOTD: {s}", .{mt});
-        current_motd_owned = true;
+        motd_label = try label_style.render(alloc, "Current MOTD:");
+        motd_label_owned = true;
 
+        var md = zz.Markdown.init();
+        md.width = inner_width;
+        const motd_rendered = md.render(alloc, mt) catch try alloc.dupe(u8, mt);
+        defer alloc.free(motd_rendered);
+
+        var box_style = zz.Style{};
+        box_style = box_style.borderAll(zz.Border.rounded);
+        box_style = box_style.borderForeground(zz.Color.cyan);
+        box_style = box_style.paddingAll(1);
+        box_style = box_style.width(box_width);
+        motd_box = try box_style.render(alloc, motd_rendered);
+        motd_box_owned = true;
     } else {
-        current_motd_line = "Current MOTD: (not set)";
+        motd_label = try label_style.render(alloc, "Current MOTD: (not set)");
+        motd_label_owned = true;
     }
-    defer if (current_motd_owned) alloc.free(current_motd_line);
-
-    var md = zz.Markdown.init();
-    md.width = inner_width;
-    const motd_rendered = md.render(alloc, current_motd_line) catch try alloc.dupe(u8, current_motd_line);
-    defer alloc.free(motd_rendered);
 
     // Flex the textarea width to terminal size.
     const avail: u16 = if (zz_ctx.width > 6) zz_ctx.width - 6 else 40;
     const flex_width: u16 = @max(40, @min(avail, 80));
     state.motd_input.width = flex_width;
-
-    var motd_section: []const u8 = "";
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.cyan);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(box_width);
-    motd_section = try box_style.render(alloc, motd_rendered);
 
     const form_view = try state.form.view(alloc);
     defer alloc.free(form_view);
@@ -151,11 +159,18 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         "Ctrl+S: set MOTD  Tab/Up/Down: navigate  Enter: newline  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
     );
 
-    const content = try std.fmt.allocPrint(
-        alloc,
-        "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}",
-        .{ styled_conn, styled_status, styled_bbs, motd_section, form_view, help },
-    );
+    const content = if (motd_box.len > 0)
+        try std.fmt.allocPrint(
+            alloc,
+            "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
+            .{ styled_conn, styled_status, styled_bbs, motd_label, motd_box, form_view, help },
+        )
+    else
+        try std.fmt.allocPrint(
+            alloc,
+            "{s}  {s}\n{s}\n\n{s}\n\n{s}\n\n{s}",
+            .{ styled_conn, styled_status, styled_bbs, motd_label, form_view, help },
+        );
     return render.fillTerminal(alloc, zz_ctx, content);
 }
 
