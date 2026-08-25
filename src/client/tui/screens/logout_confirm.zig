@@ -6,9 +6,10 @@ const zz = @import("zigzag");
 
 const render = @import("../render.zig");
 const Button = @import("../widgets/button.zig").Button;
-const register_screen = @import("register.zig");
+const app = @import("../app.zig");
 
 pub const State = struct {
+    ctx: *app.AppContext = undefined,
     form: zz.Form(2) = undefined,
     confirm_button: Button = .{ .label = "Confirm Logout" },
     cancel_button: Button = .{ .label = "Cancel" },
@@ -16,7 +17,8 @@ pub const State = struct {
 
 pub var state = State{};
 
-pub fn init() void {
+pub fn init(ctx: *app.AppContext) void {
+    state.ctx = ctx;
     state.form = zz.Form(2).init();
     state.form.title = "Confirm Logout";
     state.form.addField("", &state.cancel_button, .{ .required = false });
@@ -31,6 +33,11 @@ pub fn init() void {
 
 pub fn deinit() void {}
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    state.form.initFocus();
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
     if (k.key == .escape) return .pop;
@@ -39,7 +46,7 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     if (state.confirm_button.pressed) {
         state.confirm_button.pressed = false;
         // Delete the SQLite file and reset state.
-        register_screen.state.ctx.logout();
+        state.ctx.logout();
         return .quit;
     }
     if (state.cancel_button.pressed) {
@@ -74,11 +81,6 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     defer alloc.free(boxed);
 
     return render.fillTerminal(alloc, zz_ctx, boxed);
-}
-
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    state.form.initFocus();
 }
 
 pub const vtable = zz.Screen.VTable{

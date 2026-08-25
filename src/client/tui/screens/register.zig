@@ -102,22 +102,20 @@ pub fn deinit() void {
     state.confirm_password_input.deinit();
 }
 
-/// True when the screen is in "Login" mode: the client has a `my_user_id`
-/// (previously registered) but the signing key was not restored from the
-/// store (the user didn't save credentials). The user must re-derive the
-/// key by entering the same handle + password.
-fn isLoginMode(ctx: *app.AppContext) bool {
-    return ctx.identity.my_user_id != null and !ctx.identity.key_restored_from_store;
-}
-
-/// Returns true if the key event would mutate a text input's value (char,
-/// backspace, delete, paste). Used to filter these out when the handle
-/// field is locked from the CLI, making it read-only.
-fn isTextMutatingKey(k: zz.KeyEvent) bool {
-    return switch (k.key) {
-        .char, .backspace, .delete, .paste => true,
-        else => false,
-    };
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    const ctx = state.ctx;
+    state.form.initFocus();
+    if (isLoginMode(ctx)) {
+        ctx.status = "Login — re-enter your handle and password to restore your key.";
+    } else if (ctx.identity.key_from_file) {
+        ctx.status = "Register — key loaded from file. Enter a handle and press Ctrl+S.";
+    } else {
+        ctx.status = if (ctx.connection.isConnected())
+            "Register — enter a handle and press Ctrl+S."
+        else
+            "Not connected — Ctrl+R for settings to reconnect.";
+    }
 }
 
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
@@ -165,6 +163,89 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         return .none;
     }
     return .none;
+}
+
+fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
+    _ = ptr;
+    const ctx = state.ctx;
+    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
+    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
+    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
+
+    var info_style = zz.Style{};
+    info_style = info_style.fg(zz.Color.gray(12));
+    info_style = info_style.inline_style(true);
+
+    var help_style = zz.Style{};
+    help_style = help_style.fg(zz.Color.gray(12));
+    help_style = help_style.inline_style(true);
+
+    // Mode label: "Login" when re-deriving a key for an existing user id,
+    // "Register" for a first-time registration.
+    const login_mode = isLoginMode(ctx);
+    const mode_label: []const u8 = if (login_mode) "Login" else "Register";
+    state.form.title = if (login_mode) "Login" else "Register with BBS";
+    state.register_button.label = if (login_mode) "Login" else "Register";
+
+    const form_view = try state.form.view(alloc);
+    defer alloc.free(form_view);
+
+    const has_waiting = ctx.pending_registration != null;
+    const styled_waiting = try renderWaitingLine(alloc, ctx);
+    defer alloc.free(styled_waiting);
+
+    const my_id_line = if (login_mode)
+        "Re-enter your handle and password to restore your key."
+    else if (ctx.identity.key_from_file)
+        "Key loaded from file — enter a handle and press Ctrl+S."
+    else
+        "Not registered yet";
+    const info = try info_style.render(alloc, my_id_line);
+    defer alloc.free(info);
+
+    const styled_cs = try renderKeyFingerprint(alloc, ctx);
+    defer alloc.free(styled_cs);
+
+    const help_text = try std.fmt.allocPrint(
+        alloc,
+        "Ctrl+S: {s}  Tab/Up/Down: navigate  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
+        .{mode_label},
+    );
+    defer alloc.free(help_text);
+    const help = try help_style.render(alloc, help_text);
+    defer alloc.free(help);
+
+    const content = if (has_waiting)
+        try std.fmt.allocPrint(
+            alloc,
+            "{s}  {s}\n{s}\n\n{s}\n{s}\n{s}\n\n{s}\n\n{s}",
+            .{ styled_conn, styled_status, styled_bbs, form_view, styled_waiting, styled_cs, info, help },
+        )
+    else
+        try std.fmt.allocPrint(
+            alloc,
+            "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
+            .{ styled_conn, styled_status, styled_bbs, form_view, styled_cs, info, help },
+        );
+    return render.fillTerminal(alloc, zz_ctx, content);
+}
+
+/// True when the screen is in "Login" mode: the client has a `my_user_id`
+/// (previously registered) but the signing key was not restored from the
+/// store (the user didn't save credentials). The user must re-derive the
+/// key by entering the same handle + password.
+fn isLoginMode(ctx: *app.AppContext) bool {
+    return ctx.identity.my_user_id != null and !ctx.identity.key_restored_from_store;
+}
+
+/// Returns true if the key event would mutate a text input's value (char,
+/// backspace, delete, paste). Used to filter these out when the handle
+/// field is locked from the CLI, making it read-only.
+fn isTextMutatingKey(k: zz.KeyEvent) bool {
+    return switch (k.key) {
+        .char, .backspace, .delete, .paste => true,
+        else => false,
+    };
 }
 
 fn tryRegister() bool {
@@ -240,69 +321,43 @@ fn tryRegister() bool {
     return true;
 }
 
-fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
-    _ = ptr;
-    const ctx = state.ctx;
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
+/// Styled "Waiting for server key... Ns" countdown line, or an empty string
+/// when no pending registration is in flight.
+fn renderWaitingLine(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]const u8 {
+    if (ctx.pending_registration == null) return try alloc.dupe(u8, "");
+    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
+    const remaining: i64 = @as(i64, @intCast(ctx.pending_registration.?.deadline_secs)) - @as(i64, @intCast(now));
+    const secs: u64 = if (remaining > 0) @intCast(remaining) else 0;
+    const waiting_line = try std.fmt.allocPrint(alloc, "Waiting for server key... {d}s", .{secs});
+    defer alloc.free(waiting_line);
+    var waiting_style = zz.Style{};
+    waiting_style = waiting_style.fg(zz.Color.yellow);
+    waiting_style = waiting_style.inline_style(true);
+    return waiting_style.render(alloc, waiting_line);
+}
 
+/// Styled "Callsign: ...  Key: ..." fingerprint line, with a placeholder when
+/// no signing key has been derived yet (makes it clear that credentials are
+/// required before registration can proceed).
+fn renderKeyFingerprint(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]const u8 {
     var info_style = zz.Style{};
     info_style = info_style.fg(zz.Color.gray(12));
     info_style = info_style.inline_style(true);
 
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-
-    // Mode label: "Login" when re-deriving a key for an existing user id,
-    // "Register" for a first-time registration.
-    const login_mode = isLoginMode(ctx);
-    const mode_label: []const u8 = if (login_mode) "Login" else "Register";
-    state.form.title = if (login_mode) "Login" else "Register with BBS";
-    state.register_button.label = if (login_mode) "Login" else "Register";
-
-    const form_view = try state.form.view(alloc);
-    defer alloc.free(form_view);
-
-    var waiting_line: []const u8 = "";
-    var waiting_owned: bool = false;
-    if (ctx.pending_registration != null) {
-        const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
-        const remaining: i64 = @as(i64, @intCast(ctx.pending_registration.?.deadline_secs)) - @as(i64, @intCast(now));
-        const secs: u64 = if (remaining > 0) @intCast(remaining) else 0;
-        waiting_line = try std.fmt.allocPrint(alloc, "Waiting for server key... {d}s", .{secs});
-        waiting_owned = true;
-    }
-    defer if (waiting_owned) alloc.free(waiting_line);
-
-    var waiting_style = zz.Style{};
-    waiting_style = waiting_style.fg(zz.Color.yellow);
-    waiting_style = waiting_style.inline_style(true);
-    const styled_waiting = if (waiting_owned) try waiting_style.render(alloc, waiting_line) else try alloc.dupe(u8, "");
-    defer alloc.free(styled_waiting);
-
-    const my_id_line = if (login_mode)
-        "Re-enter your handle and password to restore your key."
-    else if (ctx.identity.key_from_file)
-        "Key loaded from file — enter a handle and press Ctrl+S."
-    else
-        "Not registered yet";
-    const info = try info_style.render(alloc, my_id_line);
-    defer alloc.free(info);
-
-    // Fingerprint of the working signing key, or a placeholder when no key
-    // has been derived yet (no CLI --key, no stored secret key, and the user
-    // hasn't entered handle+password). The placeholder makes it clear that
-    // entering credentials is required before registration can proceed.
     var cs_line: []const u8 = "";
     var cs_owned: bool = false;
     if (ctx.identity.keypair) |kp| {
         const pk = kp.publicKeyBytes();
         cs_line = try std.fmt.allocPrint(alloc, "Callsign: {s}  Key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
             ctx.connection.callsign_input.value.items,
-            pk[0], pk[1], pk[2], pk[3],
-            pk[28], pk[29], pk[30], pk[31],
+            pk[0],
+            pk[1],
+            pk[2],
+            pk[3],
+            pk[28],
+            pk[29],
+            pk[30],
+            pk[31],
         });
         cs_owned = true;
     } else {
@@ -314,47 +369,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         cs_owned = true;
     }
     defer if (cs_owned) alloc.free(cs_line);
-    const styled_cs = try info_style.render(alloc, cs_line);
-    defer alloc.free(styled_cs);
-
-    const help_text = try std.fmt.allocPrint(
-        alloc,
-        "Ctrl+S: {s}  Tab/Up/Down: navigate  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
-        .{mode_label},
-    );
-    defer alloc.free(help_text);
-    const help = try help_style.render(alloc, help_text);
-    defer alloc.free(help);
-
-    const content = if (waiting_owned)
-        try std.fmt.allocPrint(
-            alloc,
-            "{s}  {s}\n{s}\n\n{s}\n{s}\n{s}\n\n{s}\n\n{s}",
-            .{ styled_conn, styled_status, styled_bbs, form_view, styled_waiting, styled_cs, info, help },
-        )
-    else
-        try std.fmt.allocPrint(
-            alloc,
-            "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
-            .{ styled_conn, styled_status, styled_bbs, form_view, styled_cs, info, help },
-        );
-    return render.fillTerminal(alloc, zz_ctx, content);
-}
-
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    const ctx = state.ctx;
-    state.form.initFocus();
-    if (isLoginMode(ctx)) {
-        ctx.status = "Login — re-enter your handle and password to restore your key.";
-    } else if (ctx.identity.key_from_file) {
-        ctx.status = "Register — key loaded from file. Enter a handle and press Ctrl+S.";
-    } else {
-        ctx.status = if (ctx.connection.isConnected())
-            "Register — enter a handle and press Ctrl+S."
-        else
-            "Not connected — Ctrl+R for settings to reconnect.";
-    }
+    return info_style.render(alloc, cs_line);
 }
 
 pub const vtable = zz.Screen.VTable{
@@ -363,4 +378,8 @@ pub const vtable = zz.Screen.VTable{
     .on_enter = onEnter,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Register" };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Register",
+};

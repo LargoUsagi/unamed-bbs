@@ -62,7 +62,7 @@ pub fn init(self: *Model, ctx: *zz.Context) zz.Cmd(Msg) {
     compose_response.init(&self.ctx);
     register.init(&self.ctx);
     account.init(&self.ctx);
-    logout_confirm.init();
+    logout_confirm.init(&self.ctx);
     server_settings.init(&self.ctx);
     request_by_id.init(&self.ctx);
     status_popup.init(&self.ctx);

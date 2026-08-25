@@ -29,6 +29,7 @@ const store = @import("bbs").store;
 pub const User = store.User;
 pub const BulletinRecord = store.BulletinRecord;
 pub const BulletinResponseRecord = store.BulletinResponseRecord;
+pub const BulletinSummary = store.BulletinSummary;
 pub const ChatRecord = store.ChatRecord;
 
 /// Client store backed by SQLite. The `bulletins` and `users` tables share
@@ -476,7 +477,7 @@ test "Store bulletins cache add and get" {
     defer s.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), s.count());
-    _ = try s.addWithId(5, 1, 1000, "Hello", &.{ 0x01 });
+    _ = try s.addWithId(5, 1, 1000, "Hello", &.{0x01});
     try std.testing.expectEqual(@as(usize, 1), s.count());
 
     var rec = s.getById(5).?;
@@ -562,7 +563,7 @@ test "Store load persists known keys and config" {
         try s.upsertKnownKey("KE8WIF", [_]u8{0xAA} ** 32);
         try s.setMyUserId(7);
         try s.setBbsKey([_]u8{0x11} ** 32);
-        _ = try s.addWithId(1, 1, 100, "Cached", &.{ 0x01 });
+        _ = try s.addWithId(1, 1, 100, "Cached", &.{0x01});
     }
 
     {
@@ -611,7 +612,7 @@ test "Store read bulletin tracking persists across load" {
         defer s.deinit();
         try s.load(io, path);
 
-        _ = try s.addWithId(1, 1, 100, "Hello", &.{ 0x01 });
+        _ = try s.addWithId(1, 1, 100, "Hello", &.{0x01});
         s.markBulletinRead(1);
         try std.testing.expect(s.isBulletinRead(1));
     }

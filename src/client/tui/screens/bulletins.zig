@@ -13,6 +13,7 @@ const render = @import("../render.zig");
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
+const client_store = @import("../../client_store.zig");
 const compose_bulletin_screen = @import("compose_bulletin.zig");
 const bulletin_detail_screen = @import("bulletin_detail.zig");
 const request_by_id_screen = @import("request_by_id.zig");
@@ -58,6 +59,26 @@ pub fn init(ctx: *app.AppContext) void {
 }
 
 pub fn deinit() void {}
+
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    const ctx = state.ctx;
+    // Preserve list focus if it was active before being suspended.
+    if (!state.list_focused) {
+        state.form.initFocus();
+    }
+    // High-bandwidth transports (direct TCP/IP) auto-fetch the newest
+    // bulletin summaries on page entry so the list is fresh without a
+    // manual "Request Recent". Low-bandwidth radio links skip this to avoid
+    // tying up the channel; the user presses "Request Recent" instead.
+    if (ctx.inbox.isHighBandwidth()) {
+        outbox.sendBulletinListRequest(ctx);
+    }
+    state.ctx.status = if (state.ctx.identity.bbs_key != null)
+        "Bulletins — Request Recent or enter an ID and press Request by ID."
+    else
+        "No server key — request it from the Register screen.";
+}
 
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
@@ -115,19 +136,7 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
             return .none;
         }
         if (k.key == .enter and !k.modifiers.ctrl and count > 0) {
-            // Look up the bulletin ID and pass it to the detail screen.
-            const summaries = ctx.store.listAll() catch return .none;
-            defer {
-                for (summaries) |s| ctx.store.allocator.free(s.title);
-                ctx.store.allocator.free(summaries);
-            }
-            if (state.selected_index < summaries.len) {
-                const bid = summaries[state.selected_index].id;
-                ctx.store.markBulletinRead(bid);
-                bulletin_detail_screen.state.bulletin_id = bid;
-                return .{ .push = bulletin_detail_screen.screen };
-            }
-            return .none;
+            return openSelectedBulletin(ctx);
         }
     } else {
         if ((k.key == .down or k.key == .tab) and state.new_bulletin_button.focused and count > 0) {
@@ -141,7 +150,9 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
 
     if (state.request_bulletins_button.pressed) {
         state.request_bulletins_button.pressed = false;
-        outbox.sendBulletinListRequest(ctx, );
+        outbox.sendBulletinListRequest(
+            ctx,
+        );
         return .none;
     }
     if (state.request_by_id_button.pressed) {
@@ -153,18 +164,6 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         return .{ .push = compose_bulletin_screen.screen };
     }
     return .none;
-}
-
-/// Count the number of lines a rendered string occupies (trailing newline
-/// does not add an extra line). Mirrors the helper in `chat.zig`.
-fn countLines(s: []const u8) usize {
-    if (s.len == 0) return 0;
-    var n: usize = 1;
-    for (s) |c| {
-        if (c == '\n') n += 1;
-    }
-    if (s[s.len - 1] == '\n') n -= 1;
-    return n;
 }
 
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -210,20 +209,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     }
     state.visible_count = visible_items;
 
-    // --- Adjust scroll_offset so the selected row stays visible. ---
-    if (count > 0) {
-        if (state.selected_index >= count) state.selected_index = count - 1;
-        if (state.scroll_offset >= count) state.scroll_offset = count - 1;
-        if (state.selected_index < state.scroll_offset) {
-            state.scroll_offset = state.selected_index;
-        } else if (state.selected_index >= state.scroll_offset + visible_items) {
-            state.scroll_offset = state.selected_index - visible_items + 1;
-        }
-        const max_offset = if (count > visible_items) count - visible_items else 0;
-        if (state.scroll_offset > max_offset) state.scroll_offset = max_offset;
-    } else {
-        state.scroll_offset = 0;
-    }
+    adjustScrollOffset(count, visible_items);
     const start = state.scroll_offset;
     const end = @min(start + visible_items, count);
 
@@ -243,10 +229,102 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
             try std.fmt.allocPrint(alloc, "Bulletins  ({d} cached)", .{count}),
     );
 
+    const bul_box = try renderBulletinsList(alloc, ctx, summaries, start, end, visible_items, content_width);
+    defer alloc.free(bul_box);
+
+    var help_style = zz.Style{};
+    help_style = help_style.fg(zz.Color.gray(12));
+    help_style = help_style.inline_style(true);
+    const help = try help_style.render(
+        alloc,
+        "Tab/Up/Dn: navigate  PgUp/PgDn/Home/End: scroll  Enter: open  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
+    );
+
+    const content = try std.fmt.allocPrint(
+        alloc,
+        "{s}  {s}\n{s}\n\n{s}\n\n{s}\n{s}\n\n{s}",
+        .{ styled_conn, styled_status, styled_bbs, form_view, bul_title, bul_box, help },
+    );
+    return render.fillTerminal(alloc, zz_ctx, content);
+}
+
+/// Count the number of lines a rendered string occupies (trailing newline
+/// does not add an extra line). Mirrors the helper in `chat.zig`.
+fn countLines(s: []const u8) usize {
+    if (s.len == 0) return 0;
+    var n: usize = 1;
+    for (s) |c| {
+        if (c == '\n') n += 1;
+    }
+    if (s[s.len - 1] == '\n') n -= 1;
+    return n;
+}
+
+/// Called when popping back to this screen from a pushed sub-screen (e.g.
+/// returning from the bulletin detail view). Mirrors `onEnter`'s high-bandwidth
+/// auto-refresh so returning from reading a bulletin re-fetches the newest
+/// summaries. The outbox `busy` guard dedups overlapping sends.
+fn onResume(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    const ctx = state.ctx;
+    if (ctx.inbox.isHighBandwidth()) {
+        outbox.sendBulletinListRequest(ctx);
+    }
+}
+
+/// Enter-on-list handler: look up the bulletin at the selected index, mark it
+/// read, and push the bulletin detail screen for it.
+fn openSelectedBulletin(ctx: *app.AppContext) zz.ScreenAction {
+    const summaries = ctx.store.listAll() catch return .none;
+    defer {
+        for (summaries) |s| ctx.store.allocator.free(s.title);
+        ctx.store.allocator.free(summaries);
+    }
+    if (state.selected_index < summaries.len) {
+        const bid = summaries[state.selected_index].id;
+        ctx.store.markBulletinRead(bid);
+        bulletin_detail_screen.state.bulletin_id = bid;
+        return .{ .push = bulletin_detail_screen.screen };
+    }
+    return .none;
+}
+
+/// Clamp `selected_index` and `scroll_offset` so the focused row stays within
+/// the visible viewport defined by `visible_items`.
+fn adjustScrollOffset(count: usize, visible_items: usize) void {
+    if (count > 0) {
+        if (state.selected_index >= count) state.selected_index = count - 1;
+        if (state.scroll_offset >= count) state.scroll_offset = count - 1;
+        if (state.selected_index < state.scroll_offset) {
+            state.scroll_offset = state.selected_index;
+        } else if (state.selected_index >= state.scroll_offset + visible_items) {
+            state.scroll_offset = state.selected_index - visible_items + 1;
+        }
+        const max_offset = if (count > visible_items) count - visible_items else 0;
+        if (state.scroll_offset > max_offset) state.scroll_offset = max_offset;
+    } else {
+        state.scroll_offset = 0;
+    }
+}
+
+/// Render the bulletins list as a bordered, padded box of width
+/// `content_width` and `visible_items` rows. Each row shows the cursor marker,
+/// read/unread prefix, bulletin id, title, and author handle (or `#user_id`
+/// when the user isn't cached). Lines wider than the box inner width are
+/// truncated. Padded with blank lines so the box height stays fixed.
+fn renderBulletinsList(
+    alloc: std.mem.Allocator,
+    ctx: *app.AppContext,
+    summaries: []const client_store.BulletinSummary,
+    start: usize,
+    end: usize,
+    visible_items: usize,
+    content_width: u16,
+) anyerror![]const u8 {
     var bul_buf: std.ArrayList(u8) = .empty;
     defer bul_buf.deinit(alloc);
     const inner_width: usize = if (content_width > 4) content_width - 4 else 36;
-    if (count == 0) {
+    if (summaries.len == 0) {
         try bul_buf.appendSlice(alloc, "(no bulletins yet — press Request Recent)");
     } else {
         for (start..end) |i| {
@@ -299,54 +377,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     bul_box_style = bul_box_style.borderForeground(if (state.list_focused) zz.Color.yellow else zz.Color.cyan);
     bul_box_style = bul_box_style.paddingAll(1);
     bul_box_style = bul_box_style.width(content_width);
-    const bul_box = try bul_box_style.render(alloc, bul_buf.items);
-
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
-        alloc,
-        "Tab/Up/Dn: navigate  PgUp/PgDn/Home/End: scroll  Enter: open  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
-    );
-
-    const content = try std.fmt.allocPrint(
-        alloc,
-        "{s}  {s}\n{s}\n\n{s}\n\n{s}\n{s}\n\n{s}",
-        .{ styled_conn, styled_status, styled_bbs, form_view, bul_title, bul_box, help },
-    );
-    return render.fillTerminal(alloc, zz_ctx, content);
-}
-
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    const ctx = state.ctx;
-    // Preserve list focus if it was active before being suspended.
-    if (!state.list_focused) {
-        state.form.initFocus();
-    }
-    // High-bandwidth transports (direct TCP/IP) auto-fetch the newest
-    // bulletin summaries on page entry so the list is fresh without a
-    // manual "Request Recent". Low-bandwidth radio links skip this to avoid
-    // tying up the channel; the user presses "Request Recent" instead.
-    if (ctx.inbox.isHighBandwidth()) {
-        outbox.sendBulletinListRequest(ctx);
-    }
-    state.ctx.status = if (state.ctx.identity.bbs_key != null)
-        "Bulletins — Request Recent or enter an ID and press Request by ID."
-    else
-        "No server key — request it from the Register screen.";
-}
-
-/// Called when popping back to this screen from a pushed sub-screen (e.g.
-/// returning from the bulletin detail view). Mirrors `onEnter`'s high-bandwidth
-/// auto-refresh so returning from reading a bulletin re-fetches the newest
-/// summaries. The outbox `busy` guard dedups overlapping sends.
-fn onResume(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    const ctx = state.ctx;
-    if (ctx.inbox.isHighBandwidth()) {
-        outbox.sendBulletinListRequest(ctx);
-    }
+    return bul_box_style.render(alloc, bul_buf.items);
 }
 
 pub const vtable = zz.Screen.VTable{
@@ -356,4 +387,8 @@ pub const vtable = zz.Screen.VTable{
     .on_resume = onResume,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Bulletins" };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Bulletins",
+};

@@ -48,6 +48,16 @@ pub fn deinit() void {
     state.message_input.deinit();
 }
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    state.form.initFocus();
+    const ctx = state.ctx;
+    ctx.status = if (ctx.connection.isConnected())
+        "Connected. Ctrl+S to send, Ctrl+H for history, Ctrl+R for settings."
+    else
+        "Disconnected — Ctrl+R for settings to reconnect.";
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
 
@@ -61,13 +71,7 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     // the chat window is assembled from the server's authoritative history
     // (sorted by epoch time).
     if (k.modifiers.ctrl and k.key == .char and k.key.char == 'h') {
-        const ctx = state.ctx;
-        if (!ctx.connection.isConnected()) {
-            ctx.status = "Not connected — Ctrl+R for settings to reconnect.";
-            return .none;
-        }
-        outbox.sendChatHistoryRequest(ctx);
-        return .none;
+        return requestChatHistory();
     }
 
     if (k.key == .enter) {
@@ -86,30 +90,6 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         sendAndClear();
     }
     return .none;
-}
-
-fn sendAndClear() void {
-    const ctx = state.ctx;
-    const message = state.message_input.getValue(std.heap.page_allocator) catch {
-        ctx.status = "Out of memory.";
-        return;
-    };
-    defer std.heap.page_allocator.free(message);
-    if (message.len == 0) {
-        ctx.status = "Message is empty.";
-        return;
-    }
-    if (message.len > types.max_chat_text_len) {
-        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Chat exceeds {d} characters.", .{types.max_chat_text_len}) catch "Chat exceeds 256 characters.";
-        return;
-    }
-    // Route the chat through the BBS server (signed by the client). The
-    // BBS validates the sender is registered and the signature is valid,
-    // then stores and re-broadcasts the chat signed by the server.
-    outbox.sendChat(ctx, message);
-    if (ctx.outbox.busy) {
-        state.message_input.setValue("") catch {};
-    }
 }
 
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -155,23 +135,67 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     log_title_style = log_title_style.inline_style(true);
     const log_title = try log_title_style.render(alloc, "Messages");
 
+    const log_box = try renderChatLog(alloc, ctx, log_content_h, log_box_width);
+    defer alloc.free(log_box);
+
+    const content = try std.fmt.allocPrint(
+        alloc,
+        "{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
+        .{ header, log_title, log_box, form_view, help },
+    );
+    return render.fillTerminal(alloc, zz_ctx, content);
+}
+
+fn sendAndClear() void {
+    const ctx = state.ctx;
+    const message = state.message_input.getValue(std.heap.page_allocator) catch {
+        ctx.status = "Out of memory.";
+        return;
+    };
+    defer std.heap.page_allocator.free(message);
+    if (message.len == 0) {
+        ctx.status = "Message is empty.";
+        return;
+    }
+    if (message.len > types.max_chat_text_len) {
+        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Chat exceeds {d} characters.", .{types.max_chat_text_len}) catch "Chat exceeds 256 characters.";
+        return;
+    }
+    // Route the chat through the BBS server (signed by the client). The
+    // BBS validates the sender is registered and the signature is valid,
+    // then stores and re-broadcasts the chat signed by the server.
+    outbox.sendChat(ctx, message);
+    if (ctx.outbox.busy) {
+        state.message_input.setValue("") catch {};
+    }
+}
+
+/// Ctrl+H handler: request the most recent chat messages from the BBS.
+/// Returns `.none` after setting a status string (or pushing settings).
+fn requestChatHistory() zz.ScreenAction {
+    const ctx = state.ctx;
+    if (!ctx.connection.isConnected()) {
+        ctx.status = "Not connected — Ctrl+R for settings to reconnect.";
+        return .none;
+    }
+    outbox.sendChatHistoryRequest(ctx);
+    return .none;
+}
+
+/// Read the chat log directly from the SQLite cache (the de-duplicated,
+/// sorted source of truth) and render it inside a bordered, padded box of
+/// the given content height and box width. The store returns newest-first;
+/// the rendered box displays oldest-first so the most recent messages appear
+/// at the bottom. Padded with blank lines so the box height stays fixed.
+fn renderChatLog(alloc: std.mem.Allocator, ctx: *app.AppContext, log_content_h: usize, log_box_width: u16) anyerror![]const u8 {
     var log_buf: std.ArrayList(u8) = .empty;
     defer log_buf.deinit(alloc);
 
-    // Read the chat log directly from the SQLite cache (the de-duplicated,
-    // sorted source of truth) rather than the in-memory ring buffer. This
-    // makes a `chat_history_request` (Ctrl+H) merge cleanly into the window:
-    // the store's `INSERT OR REPLACE` on `epoch_time` de-duplicates messages
-    // that were already cached, and the `ORDER BY epoch_time DESC` query
-    // returns them in proper chronological order — so the window never shows
-    // duplicates or out-of-order lines after a history refresh.
     const recent = ctx.store.listRecentChatMessages(@intCast(log_content_h)) catch &.{};
     defer ctx.store.freeChatRecordList(recent);
     if (recent.len == 0) {
         try log_buf.appendSlice(alloc, "(no messages yet)");
     } else {
-        // The store returns newest-first; display oldest-first so the most
-        // recent messages appear at the bottom of the log box.
         var i: usize = recent.len;
         while (i > 0) {
             i -= 1;
@@ -190,8 +214,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     }
 
     // Pad the log content with empty lines so the box fills the available
-    // vertical space. Each empty line is a single '\n' appended after the
-    // last content line.
+    // vertical space.
     {
         const current_lines = countLines(log_buf.items);
         if (current_lines < log_content_h) {
@@ -207,24 +230,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     log_box_style = log_box_style.borderForeground(zz.Color.cyan);
     log_box_style = log_box_style.paddingAll(1);
     log_box_style = log_box_style.width(log_box_width);
-    const log_box = try log_box_style.render(alloc, log_buf.items);
-
-    const content = try std.fmt.allocPrint(
-        alloc,
-        "{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
-        .{ header, log_title, log_box, form_view, help },
-    );
-    return render.fillTerminal(alloc, zz_ctx, content);
-}
-
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    state.form.initFocus();
-    const ctx = state.ctx;
-    ctx.status = if (ctx.connection.isConnected())
-        "Connected. Ctrl+S to send, Ctrl+H for history, Ctrl+R for settings."
-    else
-        "Disconnected — Ctrl+R for settings to reconnect.";
+    return log_box_style.render(alloc, log_buf.items);
 }
 
 fn countLines(s: []const u8) usize {
@@ -243,4 +249,8 @@ pub const vtable = zz.Screen.VTable{
     .on_enter = onEnter,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Chat" };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Chat",
+};

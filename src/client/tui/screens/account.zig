@@ -28,6 +28,7 @@ const render = @import("../render.zig");
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
+const settings_screen = @import("settings.zig");
 const logout_confirm_screen = @import("logout_confirm.zig");
 
 pub const State = struct {
@@ -70,13 +71,21 @@ pub fn deinit() void {
     state.avatar_input.deinit();
 }
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    const ctx = state.ctx;
+    state.form.initFocus();
+    ctx.status = "Logged in — edit avatar or press Logout.";
+    populateAvatarFromCache(ctx);
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
 
     if (k.key == .escape) return .pop;
 
     if (k.modifiers.ctrl and k.key == .char and k.key.char == 'r') {
-        return .{ .push = @import("settings.zig").screen };
+        return .{ .push = settings_screen.screen };
     }
 
     _ = state.form.handleKey(k);
@@ -104,6 +113,60 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         return .{ .push = logout_confirm_screen.screen };
     }
     return .none;
+}
+
+fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
+    _ = ptr;
+    const ctx = state.ctx;
+    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
+    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
+    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
+
+    var info_style = zz.Style{};
+    info_style = info_style.fg(zz.Color.gray(12));
+    info_style = info_style.inline_style(true);
+
+    const form_view = try state.form.view(alloc);
+    defer alloc.free(form_view);
+
+    // Look up the user info from the local cache.
+    var user_info_line: []const u8 = "";
+    var user_info_owned: bool = false;
+    if (ctx.identity.my_user_id) |uid| {
+        if (ctx.store.getUserById(uid)) |user| {
+            var mut_user = user;
+            defer mut_user.deinit(ctx.store.allocator);
+            user_info_line = try std.fmt.allocPrint(alloc, "Handle: {s}\nCallsign: {s}\nUser ID: #{d}", .{
+                mut_user.handle, mut_user.callsign, uid,
+            });
+            user_info_owned = true;
+        } else {
+            user_info_line = try std.fmt.allocPrint(alloc, "User ID: #{d} (user info not yet cached)", .{uid});
+            user_info_owned = true;
+        }
+    }
+    defer if (user_info_owned) alloc.free(user_info_line);
+
+    const info = try info_style.render(alloc, user_info_line);
+    defer alloc.free(info);
+
+    const styled_cs = try renderKeyFingerprint(alloc, ctx, info_style);
+    defer alloc.free(styled_cs);
+
+    var help_style = zz.Style{};
+    help_style = help_style.fg(zz.Color.gray(12));
+    help_style = help_style.inline_style(true);
+    const help = try help_style.render(
+        alloc,
+        "Ctrl+S/Save Avatar: send  Reset: regenerate from key  Tab: next field  Up/Dn/L/R: edit avatar  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
+    );
+
+    const content = try std.fmt.allocPrint(
+        alloc,
+        "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
+        .{ styled_conn, styled_status, styled_bbs, form_view, info, styled_cs, help },
+    );
+    return render.fillTerminal(alloc, zz_ctx, content);
 }
 
 /// Enforce the avatar grid dimensions on the TextArea: at most
@@ -189,52 +252,23 @@ fn resetAvatarToDefault() void {
     ctx.status = "Avatar reset to default — press Save Avatar to commit.";
 }
 
-fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
-    _ = ptr;
-    const ctx = state.ctx;
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
-
-    var info_style = zz.Style{};
-    info_style = info_style.fg(zz.Color.gray(12));
-    info_style = info_style.inline_style(true);
-
-    const form_view = try state.form.view(alloc);
-    defer alloc.free(form_view);
-
-    // Look up the user info from the local cache.
-    var user_info_line: []const u8 = "";
-    var user_info_owned: bool = false;
-    if (ctx.identity.my_user_id) |uid| {
-        if (ctx.store.getUserById(uid)) |user| {
-            var mut_user = user;
-            defer mut_user.deinit(ctx.store.allocator);
-            user_info_line = try std.fmt.allocPrint(alloc, "Handle: {s}\nCallsign: {s}\nUser ID: #{d}", .{
-                mut_user.handle, mut_user.callsign, uid,
-            });
-            user_info_owned = true;
-        } else {
-            user_info_line = try std.fmt.allocPrint(alloc, "User ID: #{d} (user info not yet cached)", .{uid});
-            user_info_owned = true;
-        }
-    }
-    defer if (user_info_owned) alloc.free(user_info_line);
-
-    const info = try info_style.render(alloc, user_info_line);
-    defer alloc.free(info);
-
-    // Fingerprint of the working signing key. The account screen is only
-    // reachable when the key was restored/derived, so the keypair is normally
-    // non-null; guard defensively in case it was cleared (e.g. logout).
+/// Styled "Callsign: ...  Key: ..." fingerprint line for the working signing
+/// key. Falls back to "Key: none" when the keypair is missing (e.g. logout).
+fn renderKeyFingerprint(alloc: std.mem.Allocator, ctx: *app.AppContext, info_style: zz.Style) anyerror![]const u8 {
     var cs_line: []const u8 = "";
     var cs_owned: bool = false;
     if (ctx.identity.keypair) |kp| {
         const pk = kp.publicKeyBytes();
         cs_line = try std.fmt.allocPrint(alloc, "Callsign: {s}  Key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
             ctx.connection.callsign_input.value.items,
-            pk[0], pk[1], pk[2], pk[3],
-            pk[28], pk[29], pk[30], pk[31],
+            pk[0],
+            pk[1],
+            pk[2],
+            pk[3],
+            pk[28],
+            pk[29],
+            pk[30],
+            pk[31],
         });
         cs_owned = true;
     } else {
@@ -242,32 +276,12 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         cs_owned = true;
     }
     defer if (cs_owned) alloc.free(cs_line);
-    const styled_cs = try info_style.render(alloc, cs_line);
-    defer alloc.free(styled_cs);
-
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
-        alloc,
-        "Ctrl+S/Save Avatar: send  Reset: regenerate from key  Tab: next field  Up/Dn/L/R: edit avatar  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
-    );
-
-    const content = try std.fmt.allocPrint(
-        alloc,
-        "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
-        .{ styled_conn, styled_status, styled_bbs, form_view, info, styled_cs, help },
-    );
-    return render.fillTerminal(alloc, zz_ctx, content);
+    return info_style.render(alloc, cs_line);
 }
 
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    const ctx = state.ctx;
-    state.form.initFocus();
-    ctx.status = "Logged in — edit avatar or press Logout.";
-
-    // Pre-populate the avatar editor with the current avatar from the cache.
+/// Pre-populate the avatar editor with the current avatar from the cache, or
+/// request the user info from the server when it isn't cached yet.
+fn populateAvatarFromCache(ctx: *app.AppContext) void {
     if (ctx.identity.my_user_id) |uid| {
         if (ctx.store.getUserById(uid)) |user| {
             var mut_user = user;
@@ -275,7 +289,6 @@ fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
             state.avatar_input.setValue(mut_user.avatar) catch {};
             clampAvatarInput();
         } else {
-            // User info not cached yet — request it so the avatar arrives.
             const ids = [_]u16{uid};
             outbox.sendUserInfoRequest(ctx, &ids);
             ctx.status = "Requesting user info...";
@@ -289,4 +302,8 @@ pub const vtable = zz.Screen.VTable{
     .on_enter = onEnter,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Account" };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Account",
+};

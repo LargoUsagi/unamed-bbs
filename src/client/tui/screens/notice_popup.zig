@@ -32,6 +32,11 @@ pub fn init(ctx: *app.AppContext) void {
 
 pub fn deinit() void {}
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    state.form.initFocus();
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
     if (k.key == .escape or k.key == .enter) {
@@ -78,11 +83,6 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const boxed = try box_style.render(alloc, content);
 
     return render.fillTerminal(alloc, zz_ctx, boxed);
-}
-
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    state.form.initFocus();
 }
 
 pub const vtable = zz.Screen.VTable{

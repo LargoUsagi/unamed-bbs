@@ -46,6 +46,12 @@ pub fn deinit() void {
     state.to_id_input.deinit();
 }
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    state.form.initFocus();
+    state.ctx.status = "Enter bulletin ID(s) and press Ctrl+S or Request.";
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
     if (k.key == .escape) return .pop;
@@ -62,6 +68,34 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         return .none;
     }
     return .none;
+}
+
+fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
+    _ = ptr;
+    const form_view = try state.form.view(alloc);
+    defer alloc.free(form_view);
+
+    var info_style = zz.Style{};
+    info_style = info_style.fg(zz.Color.gray(12));
+    info_style = info_style.inline_style(true);
+    const hint = try info_style.render(
+        alloc,
+        "Leave To ID blank for a single bulletin.  Max range: 50.",
+    );
+    defer alloc.free(hint);
+
+    const content = try std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ form_view, hint });
+    defer alloc.free(content);
+
+    var box_style = zz.Style{};
+    box_style = box_style.borderAll(zz.Border.rounded);
+    box_style = box_style.borderForeground(zz.Color.cyan);
+    box_style = box_style.paddingAll(1);
+    box_style = box_style.width(60);
+    const boxed = try box_style.render(alloc, content);
+    defer alloc.free(boxed);
+
+    return render.fillTerminal(alloc, zz_ctx, boxed);
 }
 
 fn tryRequest() bool {
@@ -112,40 +146,6 @@ fn tryRequest() bool {
         return true;
     }
     return false;
-}
-
-fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
-    _ = ptr;
-    const form_view = try state.form.view(alloc);
-    defer alloc.free(form_view);
-
-    var info_style = zz.Style{};
-    info_style = info_style.fg(zz.Color.gray(12));
-    info_style = info_style.inline_style(true);
-    const hint = try info_style.render(
-        alloc,
-        "Leave To ID blank for a single bulletin.  Max range: 50.",
-    );
-    defer alloc.free(hint);
-
-    const content = try std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ form_view, hint });
-    defer alloc.free(content);
-
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.cyan);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(60);
-    const boxed = try box_style.render(alloc, content);
-    defer alloc.free(boxed);
-
-    return render.fillTerminal(alloc, zz_ctx, boxed);
-}
-
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    state.form.initFocus();
-    state.ctx.status = "Enter bulletin ID(s) and press Ctrl+S or Request.";
 }
 
 pub const vtable = zz.Screen.VTable{

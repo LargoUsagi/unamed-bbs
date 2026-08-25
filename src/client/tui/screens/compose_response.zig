@@ -50,6 +50,16 @@ pub fn deinit() void {
     state.body_input.deinit();
 }
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    state.form.initFocus();
+    const ctx = state.ctx;
+    ctx.status = if (ctx.connection.isConnected())
+        "Compose response — Ctrl+S to post."
+    else
+        "Not connected — Ctrl+R for settings to reconnect.";
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
 
@@ -71,22 +81,6 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         if (postResponse()) return .pop;
     }
     return .none;
-}
-
-fn postResponse() bool {
-    const ctx = state.ctx;
-    const body = state.body_input.getValue(std.heap.page_allocator) catch {
-        ctx.status = "Out of memory.";
-        return false;
-    };
-    defer std.heap.page_allocator.free(body);
-
-    outbox.sendBulletinResponse(ctx, state.bulletin_id, body);
-    if (ctx.outbox.busy) {
-        state.body_input.setValue("") catch {};
-        return true;
-    }
-    return false;
 }
 
 fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -124,14 +118,20 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     return panel_style.render(alloc, inner);
 }
 
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    state.form.initFocus();
+fn postResponse() bool {
     const ctx = state.ctx;
-    ctx.status = if (ctx.connection.isConnected())
-        "Compose response — Ctrl+S to post."
-    else
-        "Not connected — Ctrl+R for settings to reconnect.";
+    const body = state.body_input.getValue(std.heap.page_allocator) catch {
+        ctx.status = "Out of memory.";
+        return false;
+    };
+    defer std.heap.page_allocator.free(body);
+
+    outbox.sendBulletinResponse(ctx, state.bulletin_id, body);
+    if (ctx.outbox.busy) {
+        state.body_input.setValue("") catch {};
+        return true;
+    }
+    return false;
 }
 
 pub const vtable = zz.Screen.VTable{
@@ -140,4 +140,9 @@ pub const vtable = zz.Screen.VTable{
     .on_enter = onEnter,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Compose Response", .modal = true };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Compose Response",
+    .modal = true,
+};

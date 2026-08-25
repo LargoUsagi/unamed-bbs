@@ -9,6 +9,7 @@ const render = @import("../render.zig");
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
+const settings_screen = @import("settings.zig");
 
 pub const State = struct {
     ctx: *app.AppContext = undefined,
@@ -43,6 +44,16 @@ pub fn deinit() void {
     state.motd_input.deinit();
 }
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    const ctx = state.ctx;
+    state.form.initFocus();
+    ctx.status = if (ctx.identity.my_is_sysop)
+        "Server Settings — enter new MOTD and press Ctrl+S."
+    else
+        "Server Settings is sysop-only.";
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
     const ctx = state.ctx;
@@ -50,7 +61,7 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     if (k.key == .escape) return .pop;
 
     if (k.modifiers.ctrl and k.key == .char and k.key.char == 'r') {
-        return .{ .push = @import("settings.zig").screen };
+        return .{ .push = settings_screen.screen };
     }
 
     // Non-sysop should not be here — pop back.
@@ -75,25 +86,6 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     return .none;
 }
 
-fn trySetMotd() bool {
-    const ctx = state.ctx;
-    const text = state.motd_input.getValue(std.heap.page_allocator) catch {
-        ctx.status = "Out of memory.";
-        return false;
-    };
-    defer std.heap.page_allocator.free(text);
-    if (text.len == 0) {
-        ctx.status = "MOTD text is empty.";
-        return false;
-    }
-    outbox.sendMotd(ctx, text);
-    if (ctx.outbox.busy) {
-        state.motd_input.setValue("") catch {};
-        return true;
-    }
-    return false;
-}
-
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
     _ = ptr;
     const ctx = state.ctx;
@@ -108,43 +100,10 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const max_width: u16 = 80;
     const content_width: u16 = if (zz_ctx.width > 4) @min(zz_ctx.width - 4, max_width) else 40;
 
-    const box_width: u16 = content_width;
-    const inner_width: u16 = if (box_width > 4) box_width - 4 else 36;
-
-    // --- Current MOTD: label outside the box, MOTD rendered as markdown inside ---
-    // Mirrors the landing screen's MOTD box so the two screens look the same.
-    var label_style = zz.Style{};
-    label_style = label_style.bold(true);
-    label_style = label_style.fg(zz.Color.cyan);
-    label_style = label_style.inline_style(true);
-
-    var motd_label: []const u8 = "";
-    var motd_label_owned: bool = false;
-    var motd_box: []const u8 = "";
-    var motd_box_owned: bool = false;
-    defer if (motd_label_owned) alloc.free(motd_label);
-    defer if (motd_box_owned) alloc.free(motd_box);
-
-    if (ctx.motd_text) |mt| {
-        motd_label = try label_style.render(alloc, "Current MOTD:");
-        motd_label_owned = true;
-
-        var md = zz.Markdown.init();
-        md.width = inner_width;
-        const motd_rendered = md.render(alloc, mt) catch try alloc.dupe(u8, mt);
-        defer alloc.free(motd_rendered);
-
-        var box_style = zz.Style{};
-        box_style = box_style.borderAll(zz.Border.rounded);
-        box_style = box_style.borderForeground(zz.Color.cyan);
-        box_style = box_style.paddingAll(1);
-        box_style = box_style.width(box_width);
-        motd_box = try box_style.render(alloc, motd_rendered);
-        motd_box_owned = true;
-    } else {
-        motd_label = try label_style.render(alloc, "Current MOTD: (not set)");
-        motd_label_owned = true;
-    }
+    const motd_label = try renderCurrentMotdLabel(alloc, ctx.motd_text != null);
+    defer alloc.free(motd_label);
+    const motd_box = try renderCurrentMotdBox(alloc, ctx, content_width);
+    defer alloc.free(motd_box);
 
     // Flex the textarea width to terminal size.
     const avail: u16 = if (zz_ctx.width > 6) zz_ctx.width - 6 else 40;
@@ -174,14 +133,51 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     return render.fillTerminal(alloc, zz_ctx, content);
 }
 
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
+fn trySetMotd() bool {
     const ctx = state.ctx;
-    state.form.initFocus();
-    ctx.status = if (ctx.identity.my_is_sysop)
-        "Server Settings — enter new MOTD and press Ctrl+S."
-    else
-        "Server Settings is sysop-only.";
+    const text = state.motd_input.getValue(std.heap.page_allocator) catch {
+        ctx.status = "Out of memory.";
+        return false;
+    };
+    defer std.heap.page_allocator.free(text);
+    if (text.len == 0) {
+        ctx.status = "MOTD text is empty.";
+        return false;
+    }
+    outbox.sendMotd(ctx, text);
+    if (ctx.outbox.busy) {
+        state.motd_input.setValue("") catch {};
+        return true;
+    }
+    return false;
+}
+
+/// Styled "Current MOTD:" label (or "Current MOTD: (not set)" when none set).
+fn renderCurrentMotdLabel(alloc: std.mem.Allocator, has_motd: bool) anyerror![]const u8 {
+    var label_style = zz.Style{};
+    label_style = label_style.bold(true);
+    label_style = label_style.fg(zz.Color.cyan);
+    label_style = label_style.inline_style(true);
+    const text: []const u8 = if (has_motd) "Current MOTD:" else "Current MOTD: (not set)";
+    return label_style.render(alloc, text);
+}
+
+/// Styled bordered box rendering the current MOTD as markdown, or an empty
+/// string when no MOTD is set.
+fn renderCurrentMotdBox(alloc: std.mem.Allocator, ctx: *app.AppContext, content_width: u16) anyerror![]const u8 {
+    const mt = ctx.motd_text orelse return try alloc.dupe(u8, "");
+    const box_width: u16 = content_width;
+    const inner_width: u16 = if (box_width > 4) box_width - 4 else 36;
+    var md = zz.Markdown.init();
+    md.width = inner_width;
+    const motd_rendered = md.render(alloc, mt) catch try alloc.dupe(u8, mt);
+    defer alloc.free(motd_rendered);
+    var box_style = zz.Style{};
+    box_style = box_style.borderAll(zz.Border.rounded);
+    box_style = box_style.borderForeground(zz.Color.cyan);
+    box_style = box_style.paddingAll(1);
+    box_style = box_style.width(box_width);
+    return box_style.render(alloc, motd_rendered);
 }
 
 pub const vtable = zz.Screen.VTable{
@@ -190,4 +186,8 @@ pub const vtable = zz.Screen.VTable{
     .on_enter = onEnter,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Server Settings" };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Server Settings",
+};

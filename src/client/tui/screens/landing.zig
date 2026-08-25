@@ -44,67 +44,16 @@ pub fn init(ctx: *app.AppContext) void {
 
 pub fn deinit() void {}
 
-/// Pack the identity fields that gate the landing buttons (auth label,
-/// User Directory, Server Settings) into a small signature so we can
-/// cheaply detect async changes without rebuilding the form every tick.
-fn identitySig() u32 {
-    const id = state.ctx.identity;
-    var sig: u32 = 0;
-    if (id.my_user_id != null) sig |= 1;
-    if (id.key_restored_from_store) sig |= 2;
-    if (id.bbs_key != null) sig |= 4;
-    if (id.my_is_sysop) sig |= 8;
-    return sig;
-}
-
-/// Rebuild the form from the current identity state. Called on initial entry,
-/// on resume (returning from a pushed sub-screen via `pop`), and whenever
-/// `refreshIfStale` detects the identity signature changed. Does NOT touch
-/// `ctx.status` so it is safe to call from `on_resume` / the tick path without
-/// clobbering status text set by incoming handlers (e.g. "Registered as
-/// user #N").
-fn rebuildForm() void {
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
     const ctx = state.ctx;
-    // Rebuild the form each entry so the conditional buttons appear only when
-    // their gate conditions hold: "User Directory" requires a registered,
-    // logged-in client (my_user_id set AND a known BBS key); "Server Settings"
-    // is sysop-only. The auth button relabels to "Register" (no user id),
-    // "Login" (user id but no restored key), or "Account" (user id + restored
-    // key) and routes accordingly in the update handler.
-    state.form = zz.Form(5).init();
-    state.form.title = "";
-    state.form.addField("", &state.chat_button, .{ .required = false });
-    state.form.addField("", &state.bulletins_button, .{ .required = false });
-    if (ctx.identity.my_user_id != null and ctx.identity.key_restored_from_store) {
-        state.auth_button.label = "Account";
-    } else if (ctx.identity.my_user_id != null) {
-        state.auth_button.label = "Login";
-    } else {
-        state.auth_button.label = "Register";
-    }
-    state.form.addField("", &state.auth_button, .{ .required = false });
-    if (ctx.identity.my_user_id != null and ctx.identity.bbs_key != null) {
-        state.form.addField("", &state.user_directory_button, .{ .required = false });
-    }
-    if (ctx.identity.my_is_sysop) {
-        state.form.addField("", &state.server_settings_button, .{ .required = false });
-    }
-    state.form.submit_keys = &.{};
-    state.form.cancel_keys = &.{};
-    _ = state.form.focus_group.addNextKey(.{ .key = .down });
-    _ = state.form.focus_group.addPrevKey(.{ .key = .up });
-    state.form.focus_group.wrap = false;
-    state.form.hint_text = "";
-    state.form.initFocus();
-    state.last_identity_sig = identitySig();
-}
-
-/// Rebuild the form if the identity signature changed since the last rebuild.
-/// Called from the model tick so the landing buttons react to async identity
-/// events (auto-register ack, BBS key arrival, sysop `user_info` broadcast)
-/// without requiring the user to leave and re-enter the screen.
-pub fn refreshIfStale() void {
-    if (identitySig() != state.last_identity_sig) rebuildForm();
+    // Rebuild the form (button labels + conditional fields) from the current
+    // identity state. Status is set here only on initial entry — `on_resume`
+    // and the tick-driven `refreshIfStale` deliberately leave `ctx.status`
+    // alone so they don't clobber messages set by incoming handlers.
+    rebuildForm();
+    setLandingStatus(ctx);
+    outbox.requestMotd(ctx);
 }
 
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
@@ -172,23 +121,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const content_width: u16 = if (zz_ctx.width > 4) @min(zz_ctx.width - 4, max_width) else 40;
 
     // MOTD rendered as markdown inside a bordered box, capped at content_width.
-    var motd_section: []const u8 = "";
-    if (ctx.motd_text) |motd| {
-        const box_width: u16 = content_width;
-        const inner_width: u16 = if (box_width > 4) box_width - 4 else 36;
-
-        var md = zz.Markdown.init();
-        md.width = inner_width;
-        const motd_rendered = md.render(alloc, motd) catch try alloc.dupe(u8, motd);
-        defer alloc.free(motd_rendered);
-
-        var box_style = zz.Style{};
-        box_style = box_style.borderAll(zz.Border.rounded);
-        box_style = box_style.borderForeground(zz.Color.cyan);
-        box_style = box_style.paddingAll(1);
-        box_style = box_style.width(box_width);
-        motd_section = try box_style.render(alloc, motd_rendered);
-    }
+    const motd_section = try renderMotdSection(alloc, ctx, content_width);
+    defer alloc.free(motd_section);
 
     const content = if (motd_section.len > 0)
         try std.fmt.allocPrint(
@@ -205,15 +139,74 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     return render.fillTerminal(alloc, zz_ctx, content);
 }
 
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    const ctx = state.ctx;
-    // Rebuild the form (button labels + conditional fields) from the current
-    // identity state. Status is set here only on initial entry — `on_resume`
-    // and the tick-driven `refreshIfStale` deliberately leave `ctx.status`
-    // alone so they don't clobber messages set by incoming handlers.
-    rebuildForm();
+/// Pack the identity fields that gate the landing buttons (auth label,
+/// User Directory, Server Settings) into a small signature so we can
+/// cheaply detect async changes without rebuilding the form every tick.
+fn identitySig() u32 {
+    const id = state.ctx.identity;
+    var sig: u32 = 0;
+    if (id.my_user_id != null) sig |= 1;
+    if (id.key_restored_from_store) sig |= 2;
+    if (id.bbs_key != null) sig |= 4;
+    if (id.my_is_sysop) sig |= 8;
+    return sig;
+}
 
+/// Rebuild the form from the current identity state. Called on initial entry,
+/// on resume (returning from a pushed sub-screen via `pop`), and whenever
+/// `refreshIfStale` detects the identity signature changed. Does NOT touch
+/// `ctx.status` so it is safe to call from `on_resume` / the tick path without
+/// clobbering status text set by incoming handlers (e.g. "Registered as
+/// user #N").
+fn rebuildForm() void {
+    const ctx = state.ctx;
+    // Rebuild the form each entry so the conditional buttons appear only when
+    // their gate conditions hold: "User Directory" requires a registered,
+    // logged-in client (my_user_id set AND a known BBS key); "Server Settings"
+    // is sysop-only. The auth button relabels to "Register" (no user id),
+    // "Login" (user id but no restored key), or "Account" (user id + restored
+    // key) and routes accordingly in the update handler.
+    state.form = zz.Form(5).init();
+    state.form.title = "";
+    state.form.addField("", &state.chat_button, .{ .required = false });
+    state.form.addField("", &state.bulletins_button, .{ .required = false });
+    if (ctx.identity.my_user_id != null and ctx.identity.key_restored_from_store) {
+        state.auth_button.label = "Account";
+    } else if (ctx.identity.my_user_id != null) {
+        state.auth_button.label = "Login";
+    } else {
+        state.auth_button.label = "Register";
+    }
+    state.form.addField("", &state.auth_button, .{ .required = false });
+    if (ctx.identity.my_user_id != null and ctx.identity.bbs_key != null) {
+        state.form.addField("", &state.user_directory_button, .{ .required = false });
+    }
+    if (ctx.identity.my_is_sysop) {
+        state.form.addField("", &state.server_settings_button, .{ .required = false });
+    }
+    state.form.submit_keys = &.{};
+    state.form.cancel_keys = &.{};
+    _ = state.form.focus_group.addNextKey(.{ .key = .down });
+    _ = state.form.focus_group.addPrevKey(.{ .key = .up });
+    state.form.focus_group.wrap = false;
+    state.form.hint_text = "";
+    state.form.initFocus();
+    state.last_identity_sig = identitySig();
+}
+
+/// Rebuild the form if the identity signature changed since the last rebuild.
+/// Called from the model tick so the landing buttons react to async identity
+/// events (auto-register ack, BBS key arrival, sysop `user_info` broadcast)
+/// without requiring the user to leave and re-enter the screen.
+pub fn refreshIfStale() void {
+    if (identitySig() != state.last_identity_sig) rebuildForm();
+}
+
+/// Set the landing status line based on the current identity state. Called
+/// only from `onEnter` (initial entry) — `on_resume` and the tick-driven
+/// `refreshIfStale` deliberately leave `ctx.status` alone so they don't
+/// clobber messages set by incoming handlers.
+fn setLandingStatus(ctx: *app.AppContext) void {
     // Welcome-back status when the identity was restored from the store.
     if (ctx.identity.my_user_id != null and ctx.identity.key_restored_from_store) {
         if (ctx.store.getUserById(ctx.identity.my_user_id.?)) |user| {
@@ -240,9 +233,26 @@ fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
     } else {
         ctx.status = "Choose Chat, Bulletins, or Register.";
     }
-    outbox.requestMotd(
-        ctx,
-    );
+}
+
+/// Render the MOTD as markdown inside a bordered, padded box capped at
+/// `content_width`. Returns an empty string when no MOTD is set.
+fn renderMotdSection(alloc: std.mem.Allocator, ctx: *app.AppContext, content_width: u16) anyerror![]const u8 {
+    const motd = ctx.motd_text orelse return try alloc.dupe(u8, "");
+    const box_width: u16 = content_width;
+    const inner_width: u16 = if (box_width > 4) box_width - 4 else 36;
+
+    var md = zz.Markdown.init();
+    md.width = inner_width;
+    const motd_rendered = md.render(alloc, motd) catch try alloc.dupe(u8, motd);
+    defer alloc.free(motd_rendered);
+
+    var box_style = zz.Style{};
+    box_style = box_style.borderAll(zz.Border.rounded);
+    box_style = box_style.borderForeground(zz.Color.cyan);
+    box_style = box_style.paddingAll(1);
+    box_style = box_style.width(box_width);
+    return box_style.render(alloc, motd_rendered);
 }
 
 /// Called when a pushed screen pops back to the landing screen. Rebuild the
@@ -262,4 +272,8 @@ pub const vtable = zz.Screen.VTable{
     .on_resume = onResume,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Home" };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Home",
+};

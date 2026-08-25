@@ -70,6 +70,23 @@ pub fn init(ctx: *app.AppContext) void {
 
 pub fn deinit() void {}
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    const mgr = &state.ctx.connection;
+    // Sync the active tab to the connection manager's active kind.
+    state.active_tab = switch (mgr.active_kind) {
+        .agwpe => .agwpe,
+        .tcp => .tcp,
+    };
+    state.tab_focused = !mgr.connect_locked;
+    if (!mgr.connect_locked) {
+        currentForm().initFocus();
+    } else {
+        currentForm().initFocus();
+    }
+    state.ctx.status = "Settings — Esc to return.";
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
     const ctx = state.ctx;
@@ -90,27 +107,110 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
 
     // Tab strip focus: Left/Right switches tabs, Down/Tab enters form.
     if (state.tab_focused) {
-        if (k.key == .left or k.key == .right) {
-            state.active_tab = if (state.active_tab == .agwpe) .tcp else .agwpe;
-            // Sync the connection manager's active kind.
-            mgr.active_kind = switch (state.active_tab) {
-                .agwpe => .agwpe,
-                .tcp => .tcp,
-            };
-            return .none;
-        }
-        if (k.key == .down or k.key == .tab) {
-            state.tab_focused = false;
-            currentForm().initFocus();
-            return .none;
-        }
-        return .none;
+        return handleTabStripKey(mgr, k);
     }
 
     // Form focus: Tab/Up at the top returns to tab strip.
     return handleFormKey(ctx, k);
 }
 
+fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
+    _ = ptr;
+    const ctx = state.ctx;
+    const mgr = &ctx.connection;
+    const styled_conn = try render.renderConnIndicator(alloc, mgr.isConnected(), mgr.active_kind);
+    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
+
+    // --- Tab strip ---
+    const tab_strip = try renderTabStrip(alloc, mgr);
+    defer alloc.free(tab_strip);
+
+    // --- Active form ---
+    const form_view = switch (state.active_tab) {
+        .agwpe => try state.agwpe_form.view(alloc),
+        .tcp => try state.tcp_form.view(alloc),
+    };
+    defer alloc.free(form_view);
+
+    // --- Key info ---
+    const key_info = try renderKeyInfo(alloc, ctx);
+    defer alloc.free(key_info);
+
+    // --- Incoming message log ---
+    var in_title_style = zz.Style{};
+    in_title_style = in_title_style.bold(true);
+    in_title_style = in_title_style.fg(zz.Color.magenta);
+    in_title_style = in_title_style.inline_style(true);
+    const in_title = try in_title_style.render(alloc, "Message Log");
+
+    const in_box = try renderMessageLog(alloc, ctx);
+    defer alloc.free(in_box);
+
+    // --- Sent transmissions log ---
+    const sent_box = try renderSentLog(alloc, ctx);
+    defer alloc.free(sent_box);
+
+    var sent_title_style = zz.Style{};
+    sent_title_style = sent_title_style.bold(true);
+    sent_title_style = sent_title_style.fg(zz.Color.blue);
+    sent_title_style = sent_title_style.inline_style(true);
+    const sent_title = try sent_title_style.render(alloc, "Sent transmissions");
+
+    // --- Help ---
+    var help_style = zz.Style{};
+    help_style = help_style.fg(zz.Color.gray(12));
+    help_style = help_style.inline_style(true);
+    const help = try help_style.render(
+        alloc,
+        if (mgr.connect_locked)
+            "Up/Down: navigate  Enter: activate  Ctrl+R: reconnect  Esc: Back  (fields are read-only)"
+        else
+            "Left/Right: switch transport  Tab: form/tab  Up/Down: navigate  Ctrl+R: reconnect  Esc: Back",
+    );
+
+    const inner = try std.fmt.allocPrint(
+        alloc,
+        "{s}  {s}\n{s}\n\n{s}\n\n{s}\n\n{s}\n{s}\n\n{s}\n{s}\n\n{s}",
+        .{
+            styled_conn, styled_status,
+            tab_strip,   form_view,
+            key_info,    in_title,
+            in_box,      sent_title,
+            sent_box,    help,
+        },
+    );
+    defer alloc.free(inner);
+
+    // Wrap in a bordered, padded panel.
+    var panel_style = zz.Style{};
+    panel_style = panel_style.borderAll(zz.Border.rounded);
+    panel_style = panel_style.borderForeground(zz.Color.cyan);
+    panel_style = panel_style.paddingAll(1);
+    panel_style = panel_style.width(80);
+    return panel_style.render(alloc, inner);
+}
+
+fn currentForm() *zz.Form(6) {
+    return switch (state.active_tab) {
+        .agwpe => &state.agwpe_form,
+        .tcp => &state.tcp_form,
+    };
+}
+
+/// Returns true if the key event would mutate a text input's value (char,
+/// backspace, delete, paste). Used to filter these out when a field is
+/// locked from the CLI, making it read-only.
+fn isTextMutatingKey(k: zz.KeyEvent) bool {
+    return switch (k.key) {
+        .char, .backspace, .delete, .paste => true,
+        else => false,
+    };
+}
+
+/// Handle a key while a form field has focus. Up at the first field returns
+/// to the tab strip (when transport isn't locked). Text-mutating keys are
+/// dropped for CLI-locked transport fields. Reconnect/Disconnect buttons
+/// trigger their connection actions here.
 fn handleFormKey(ctx: *app.AppContext, k: zz.KeyEvent) zz.ScreenAction {
     const form = currentForm();
 
@@ -169,31 +269,29 @@ fn handleFormKey(ctx: *app.AppContext, k: zz.KeyEvent) zz.ScreenAction {
     return .none;
 }
 
-fn currentForm() *zz.Form(6) {
-    return switch (state.active_tab) {
-        .agwpe => &state.agwpe_form,
-        .tcp => &state.tcp_form,
-    };
+/// Handle a key while the tab strip has focus: Left/Right switches tabs
+/// (syncing the connection manager's `active_kind`), Down/Tab enters the
+/// form. Returns `.none` for any other key (the tab strip eats it).
+fn handleTabStripKey(mgr: *app.ConnectionManager, k: zz.KeyEvent) zz.ScreenAction {
+    if (k.key == .left or k.key == .right) {
+        state.active_tab = if (state.active_tab == .agwpe) .tcp else .agwpe;
+        mgr.active_kind = switch (state.active_tab) {
+            .agwpe => .agwpe,
+            .tcp => .tcp,
+        };
+        return .none;
+    }
+    if (k.key == .down or k.key == .tab) {
+        state.tab_focused = false;
+        currentForm().initFocus();
+        return .none;
+    }
+    return .none;
 }
 
-/// Returns true if the key event would mutate a text input's value (char,
-/// backspace, delete, paste). Used to filter these out when a field is
-/// locked from the CLI, making it read-only.
-fn isTextMutatingKey(k: zz.KeyEvent) bool {
-    return switch (k.key) {
-        .char, .backspace, .delete, .paste => true,
-        else => false,
-    };
-}
-
-fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
-    _ = ptr;
-    const ctx = state.ctx;
-    const mgr = &ctx.connection;
-    const styled_conn = try render.renderConnIndicator(alloc, mgr.isConnected(), mgr.active_kind);
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-
-    // --- Tab strip ---
+/// Render the tab strip: AGWPE / TCP labels with the active tab highlighted,
+/// or a "locked from CLI" notice when the transport is locked.
+fn renderTabStrip(alloc: std.mem.Allocator, mgr: *app.ConnectionManager) anyerror![]const u8 {
     var tab_buf: std.ArrayList(u8) = .empty;
     defer tab_buf.deinit(alloc);
 
@@ -239,33 +337,27 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
         defer alloc.free(styled);
         try tab_buf.appendSlice(alloc, styled);
     }
+    return alloc.dupe(u8, tab_buf.items);
+}
 
-    // --- Active form ---
-    const form_view = switch (state.active_tab) {
-        .agwpe => try state.agwpe_form.view(alloc),
-        .tcp => try state.tcp_form.view(alloc),
-    };
-    defer alloc.free(form_view);
-
-    // --- Key info ---
-    var key_info: []const u8 = "";
+/// "Signing Key: …" line showing the fingerprint of the working signing key,
+/// or a placeholder prompting registration/login when none is derived.
+fn renderKeyInfo(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]const u8 {
     if (ctx.identity.keypair) |kp| {
         const pk = kp.publicKeyBytes();
-        key_info = try std.fmt.allocPrint(alloc, "Signing Key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2} (derived from passphrase)", .{
+        return std.fmt.allocPrint(alloc, "Signing Key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2} (derived from passphrase)", .{
             pk[0],          pk[1],          pk[2],          pk[3],
             pk[pk.len - 4], pk[pk.len - 3], pk[pk.len - 2], pk[pk.len - 1],
         });
     } else {
-        key_info = try alloc.dupe(u8, "Signing Key: none — register or log in to derive one");
+        return alloc.dupe(u8, "Signing Key: none — register or log in to derive one");
     }
+}
 
-    // --- Incoming message log ---
-    var in_title_style = zz.Style{};
-    in_title_style = in_title_style.bold(true);
-    in_title_style = in_title_style.fg(zz.Color.magenta);
-    in_title_style = in_title_style.inline_style(true);
-    const in_title = try in_title_style.render(alloc, "Message Log");
-
+/// Render the incoming-message log as a bordered, padded box (magenta border).
+/// Shows the most recent 15 entries (newest at top) with time, accept/reject
+/// status, signature glyph, message tag, and callsign.
+fn renderMessageLog(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]const u8 {
     const visible_log: usize = @min(ctx.buffers.message_log_count, types.max_message_log);
     var in_buf: std.ArrayList(u8) = .empty;
     defer in_buf.deinit(alloc);
@@ -314,9 +406,12 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     in_box_style = in_box_style.borderAll(zz.Border.rounded);
     in_box_style = in_box_style.borderForeground(zz.Color.magenta);
     in_box_style = in_box_style.paddingAll(1);
-    const in_box = try in_box_style.render(alloc, in_buf.items);
+    return in_box_style.render(alloc, in_buf.items);
+}
 
-    // --- Sent transmissions log ---
+/// Render the sent-transmissions log as a bordered, padded box (gray border).
+/// Shows every entry currently in the ring buffer, oldest-to-newest.
+fn renderSentLog(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]const u8 {
     const visible_sent: usize = @min(ctx.buffers.sent_log_count, types.max_sent_log);
     var sent_buf: std.ArrayList(u8) = .empty;
     defer sent_buf.deinit(alloc);
@@ -332,67 +427,11 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
         }
     }
 
-    var sent_title_style = zz.Style{};
-    sent_title_style = sent_title_style.bold(true);
-    sent_title_style = sent_title_style.fg(zz.Color.blue);
-    sent_title_style = sent_title_style.inline_style(true);
-    const sent_title = try sent_title_style.render(alloc, "Sent transmissions");
-
     var sent_box_style = zz.Style{};
     sent_box_style = sent_box_style.borderAll(zz.Border.rounded);
     sent_box_style = sent_box_style.borderForeground(zz.Color.gray(10));
     sent_box_style = sent_box_style.paddingAll(1);
-    const sent_box = try sent_box_style.render(alloc, sent_buf.items);
-
-    // --- Help ---
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
-        alloc,
-        if (mgr.connect_locked)
-            "Up/Down: navigate  Enter: activate  Ctrl+R: reconnect  Esc: Back  (fields are read-only)"
-        else
-            "Left/Right: switch transport  Tab: form/tab  Up/Down: navigate  Ctrl+R: reconnect  Esc: Back",
-    );
-
-    const inner = try std.fmt.allocPrint(
-        alloc,
-        "{s}  {s}\n{s}\n\n{s}\n\n{s}\n\n{s}\n{s}\n\n{s}\n{s}\n\n{s}",
-        .{
-            styled_conn,   styled_status,
-            tab_buf.items, form_view,
-            key_info,      in_title,
-            in_box,        sent_title,
-            sent_box,      help,
-        },
-    );
-    defer alloc.free(inner);
-
-    // Wrap in a bordered, padded panel.
-    var panel_style = zz.Style{};
-    panel_style = panel_style.borderAll(zz.Border.rounded);
-    panel_style = panel_style.borderForeground(zz.Color.cyan);
-    panel_style = panel_style.paddingAll(1);
-    panel_style = panel_style.width(80);
-    return panel_style.render(alloc, inner);
-}
-
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    const mgr = &state.ctx.connection;
-    // Sync the active tab to the connection manager's active kind.
-    state.active_tab = switch (mgr.active_kind) {
-        .agwpe => .agwpe,
-        .tcp => .tcp,
-    };
-    state.tab_focused = !mgr.connect_locked;
-    if (!mgr.connect_locked) {
-        currentForm().initFocus();
-    } else {
-        currentForm().initFocus();
-    }
-    state.ctx.status = "Settings — Esc to return.";
+    return sent_box_style.render(alloc, sent_buf.items);
 }
 
 pub const vtable = zz.Screen.VTable{
@@ -401,4 +440,9 @@ pub const vtable = zz.Screen.VTable{
     .on_enter = onEnter,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Settings", .modal = true };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Settings",
+    .modal = true,
+};

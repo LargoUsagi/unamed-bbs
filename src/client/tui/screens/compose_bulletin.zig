@@ -48,6 +48,16 @@ pub fn deinit() void {
     state.bulletin_body_input.deinit();
 }
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    state.form.initFocus();
+    const ctx = state.ctx;
+    ctx.status = if (ctx.connection.isConnected())
+        "Compose bulletin — Ctrl+S to post."
+    else
+        "Not connected — Ctrl+R for settings to reconnect.";
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
 
@@ -69,24 +79,6 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         if (postBulletin()) return .pop;
     }
     return .none;
-}
-
-fn postBulletin() bool {
-    const ctx = state.ctx;
-    const title = state.bulletin_title_input.value.items;
-    const body = state.bulletin_body_input.getValue(std.heap.page_allocator) catch {
-        ctx.status = "Out of memory.";
-        return false;
-    };
-    defer std.heap.page_allocator.free(body);
-
-    outbox.sendBulletin(ctx, title, body);
-    if (ctx.outbox.busy) {
-        state.bulletin_title_input.setValue("") catch {};
-        state.bulletin_body_input.setValue("") catch {};
-        return true;
-    }
-    return false;
 }
 
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -119,14 +111,22 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     return render.fillTerminal(alloc, zz_ctx, content);
 }
 
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    state.form.initFocus();
+fn postBulletin() bool {
     const ctx = state.ctx;
-    ctx.status = if (ctx.connection.isConnected())
-        "Compose bulletin — Ctrl+S to post."
-    else
-        "Not connected — Ctrl+R for settings to reconnect.";
+    const title = state.bulletin_title_input.value.items;
+    const body = state.bulletin_body_input.getValue(std.heap.page_allocator) catch {
+        ctx.status = "Out of memory.";
+        return false;
+    };
+    defer std.heap.page_allocator.free(body);
+
+    outbox.sendBulletin(ctx, title, body);
+    if (ctx.outbox.busy) {
+        state.bulletin_title_input.setValue("") catch {};
+        state.bulletin_body_input.setValue("") catch {};
+        return true;
+    }
+    return false;
 }
 
 pub const vtable = zz.Screen.VTable{
@@ -135,4 +135,8 @@ pub const vtable = zz.Screen.VTable{
     .on_enter = onEnter,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Compose Bulletin" };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Compose Bulletin",
+};

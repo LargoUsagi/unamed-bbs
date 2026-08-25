@@ -50,6 +50,14 @@ pub fn init(ctx: *app.AppContext) void {
 
 pub fn deinit() void {}
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    state.selected_index = 0;
+    state.scroll_offset = 0;
+    state.ctx.status = "Viewing bulletin — Esc to return.";
+    autoFetchBulletinData(state.ctx);
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
     const ctx = state.ctx;
@@ -61,19 +69,7 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     }
 
     if (k.key == .char and k.key.char == 'r') {
-        if (ctx.store.getById(state.bulletin_id)) |rec| {
-            var mut_rec = rec;
-            defer mut_rec.deinit(ctx.store.allocator);
-            if (mut_rec.body.len == 0) {
-                outbox.sendSingleBulletinRequest(ctx, state.bulletin_id);
-                ctx.status = "Requesting bulletin...";
-            } else {
-                ctx.status = "Bulletin already loaded.";
-            }
-        } else {
-            outbox.sendSingleBulletinRequest(ctx, state.bulletin_id);
-            ctx.status = "Requesting bulletin...";
-        }
+        requestBulletinBody(ctx);
         return .none;
     }
 
@@ -83,13 +79,7 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     }
 
     if (k.key == .char and k.key.char == 'c') {
-        const count = ctx.store.countResponses(state.bulletin_id);
-        if (count >= types.max_response_id + 1) {
-            ctx.status = "Compose reply blocked — bulletin is full (1024 responses).";
-            return .none;
-        }
-        compose_response_screen.state.bulletin_id = state.bulletin_id;
-        return .{ .push = compose_response_screen.screen };
+        return composeReply(ctx);
     }
 
     // Navigation between post boxes.
@@ -106,100 +96,6 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     }
 
     return .none;
-}
-
-/// Total number of posts (1 for the bulletin + number of cached responses).
-/// Returns 0 if the bulletin itself is not found.
-fn postCount(ctx: *app.AppContext) usize {
-    if (ctx.store.getById(state.bulletin_id)) |rec| {
-        var mut_rec = rec;
-        defer mut_rec.deinit(ctx.store.allocator);
-        return 1 + (ctx.store.countResponses(state.bulletin_id));
-    }
-    return 0;
-}
-
-fn formatDateTime(alloc: std.mem.Allocator, epoch: u64) ![]const u8 {
-    if (epoch == 0) return alloc.dupe(u8, "      ");
-    const es = std.time.epoch.EpochSeconds{ .secs = epoch };
-    const ds = es.getDaySeconds();
-    const ed = es.getEpochDay();
-    const year_day = ed.calculateYearDay();
-    const year = year_day.year;
-    const month_day = year_day.calculateMonthDay();
-    return std.fmt.allocPrint(alloc, "{d}{d:0>2}{d:0>2} {d:0>2}:{d:0>2} ", .{ year, month_day.month.numeric(), month_day.day_index + 1 ,  ds.getHoursIntoDay(), ds.getMinutesIntoHour()});
-}
-
-
-/// Render a single post box. `is_focused` highlights the border.
-/// `is_original` uses cyan for the original bulletin, gray for responses.
-/// If the user is cached locally, the sidebar shows the handle and join date
-/// (from `registered_datetime`) plus the post time; otherwise it shows
-/// "User #N" and the post date+time.
-fn renderPost(
-    alloc: std.mem.Allocator,
-    store: *client_store.Store,
-    user_id: u16,
-    create_datetime: u64,
-    body_text: []const u8,
-    body_width: u16,
-    is_focused: bool,
-    is_original: bool,
-) ![]const u8 {
-    // --- Left sidebar: handle, avatar, callsign, dates ---
-    var sidebar_content: []const u8 = undefined;
-    var sidebar_owned: bool = false;
-    if (store.getUserById(user_id)) |user| {
-        var mut_user = user;
-        defer mut_user.deinit(store.allocator);
-        const avatar = try avatar_widget.render(alloc, mut_user.avatar);
-        defer alloc.free(avatar);
-        const post_time = try formatDateTime(alloc, create_datetime);
-        defer alloc.free(post_time);
-        sidebar_content = try std.fmt.allocPrint(alloc, "{s}\n{s}\n{s}\n{s}", .{
-            mut_user.handle, avatar, mut_user.callsign, post_time,
-        });
-        sidebar_owned = true;
-    } else {
-        const avatar = try avatar_widget.render(alloc, "");
-        defer alloc.free(avatar);
-        const post_time = try formatDateTime(alloc, create_datetime);
-        defer alloc.free(post_time);
-        sidebar_content = try std.fmt.allocPrint(alloc, "User #{d}\n{s}\n{s}", .{
-            user_id, avatar, post_time,
-        });
-        sidebar_owned = true;
-    }
-    defer if (sidebar_owned) alloc.free(sidebar_content);
-
-    var sidebar_style = zz.Style{};
-    sidebar_style = sidebar_style.width(@intCast(sidebar_width));
-    sidebar_style = sidebar_style.fg(if (is_original) zz.Color.cyan else zz.Color.gray(14));
-    const sidebar = try sidebar_style.render(alloc, sidebar_content);
-    defer alloc.free(sidebar);
-
-    // --- Body: render as markdown, constrained width ---
-    const inner_body_width: u16 = if (body_width > @as(u16, @intCast(sidebar_width)) + 4) body_width - @as(u16, @intCast(sidebar_width)) - 4 else 40;
-    var md = zz.Markdown.init();
-    md.width = inner_body_width;
-    const body_rendered = md.render(alloc, body_text) catch try alloc.dupe(u8, body_text);
-    defer alloc.free(body_rendered);
-
-    // --- Join sidebar + body horizontally ---
-    const joined = try zz.join.horizontal(alloc, .top, &.{ sidebar, body_rendered });
-    defer alloc.free(joined);
-
-    // --- Wrap in a bordered box ---
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    if (is_focused) {
-        box_style = box_style.borderForeground(zz.Color.yellow);
-    } else {
-        box_style = box_style.borderForeground(if (is_original) zz.Color.cyan else zz.Color.gray(14));
-    }
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(body_width);
-    return box_style.render(alloc, joined);
 }
 
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -332,55 +228,10 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         else
             1;
 
-        // Height of the focused post (lines it occupies in the posts area).
-        const focused_idx = if (state.selected_index < post_count) state.selected_index else 0;
-        const focused_start = post_start_lines[focused_idx];
-        const focused_end = if (focused_idx + 1 < post_count)
-            post_start_lines[focused_idx + 1]
-        else
-            total_post_lines;
-
-        // Scroll up if focused post is above the current view.
-        if (focused_start < state.scroll_offset) {
-            state.scroll_offset = focused_start;
-        }
-        // Scroll down if focused post extends below the visible area.
-        if (focused_end > state.scroll_offset + avail_for_posts) {
-            state.scroll_offset = focused_end - avail_for_posts;
-        }
-        // Clamp: don't scroll past the end.
-        if (total_post_lines > avail_for_posts) {
-            if (state.scroll_offset + avail_for_posts > total_post_lines) {
-                state.scroll_offset = total_post_lines - avail_for_posts;
-            }
-        } else {
-            state.scroll_offset = 0;
-        }
-        // Re-check visibility after clamping.
-        if (focused_start < state.scroll_offset) {
-            state.scroll_offset = focused_start;
-        }
+        computeScrollOffset(post_start_lines, total_post_lines, avail_for_posts, post_count);
 
         // --- Extract visible lines from the posts area ---
-        const visible_posts = blk: {
-            if (total_post_lines <= avail_for_posts) break :blk try alloc.dupe(u8, posts_buf.items);
-            // Split posts_buf into lines, take [scroll_offset, scroll_offset+avail_for_posts).
-            var lines: std.ArrayList([]const u8) = .empty;
-            defer lines.deinit(alloc);
-            var iter = std.mem.splitScalar(u8, posts_buf.items, '\n');
-            while (iter.next()) |line| {
-                try lines.append(alloc, line);
-            }
-            const start = state.scroll_offset;
-            const end = @min(start + avail_for_posts, lines.items.len);
-            var vbuf: std.ArrayList(u8) = .empty;
-            defer vbuf.deinit(alloc);
-            for (lines.items[start..end], 0..) |line, i| {
-                if (i > 0) try vbuf.append(alloc, '\n');
-                try vbuf.appendSlice(alloc, line);
-            }
-            break :blk try vbuf.toOwnedSlice(alloc);
-        };
+        const visible_posts = try extractVisiblePosts(alloc, posts_buf.items, state.scroll_offset, avail_for_posts, total_post_lines);
         defer alloc.free(visible_posts);
 
         const detail = try std.fmt.allocPrint(
@@ -395,18 +246,191 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     }
 }
 
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    state.selected_index = 0;
-    state.scroll_offset = 0;
-    state.ctx.status = "Viewing bulletin — Esc to return.";
+/// Total number of posts (1 for the bulletin + number of cached responses).
+/// Returns 0 if the bulletin itself is not found.
+fn postCount(ctx: *app.AppContext) usize {
+    if (ctx.store.getById(state.bulletin_id)) |rec| {
+        var mut_rec = rec;
+        defer mut_rec.deinit(ctx.store.allocator);
+        return 1 + (ctx.store.countResponses(state.bulletin_id));
+    }
+    return 0;
+}
 
-    const ctx = state.ctx;
+fn formatDateTime(alloc: std.mem.Allocator, epoch: u64) ![]const u8 {
+    if (epoch == 0) return alloc.dupe(u8, "      ");
+    const es = std.time.epoch.EpochSeconds{ .secs = epoch };
+    const ds = es.getDaySeconds();
+    const ed = es.getEpochDay();
+    const year_day = ed.calculateYearDay();
+    const year = year_day.year;
+    const month_day = year_day.calculateMonthDay();
+    return std.fmt.allocPrint(alloc, "{d}{d:0>2}{d:0>2} {d:0>2}:{d:0>2} ", .{ year, month_day.month.numeric(), month_day.day_index + 1, ds.getHoursIntoDay(), ds.getMinutesIntoHour() });
+}
+
+/// Render a single post box. `is_focused` highlights the border.
+/// `is_original` uses cyan for the original bulletin, gray for responses.
+/// If the user is cached locally, the sidebar shows the handle and join date
+/// (from `registered_datetime`) plus the post time; otherwise it shows
+/// "User #N" and the post date+time.
+fn renderPost(
+    alloc: std.mem.Allocator,
+    store: *client_store.Store,
+    user_id: u16,
+    create_datetime: u64,
+    body_text: []const u8,
+    body_width: u16,
+    is_focused: bool,
+    is_original: bool,
+) ![]const u8 {
+    // --- Left sidebar: handle, avatar, callsign, dates ---
+    var sidebar_content: []const u8 = undefined;
+    var sidebar_owned: bool = false;
+    if (store.getUserById(user_id)) |user| {
+        var mut_user = user;
+        defer mut_user.deinit(store.allocator);
+        const avatar = try avatar_widget.render(alloc, mut_user.avatar);
+        defer alloc.free(avatar);
+        const post_time = try formatDateTime(alloc, create_datetime);
+        defer alloc.free(post_time);
+        sidebar_content = try std.fmt.allocPrint(alloc, "{s}\n{s}\n{s}\n{s}", .{
+            mut_user.handle, avatar, mut_user.callsign, post_time,
+        });
+        sidebar_owned = true;
+    } else {
+        const avatar = try avatar_widget.render(alloc, "");
+        defer alloc.free(avatar);
+        const post_time = try formatDateTime(alloc, create_datetime);
+        defer alloc.free(post_time);
+        sidebar_content = try std.fmt.allocPrint(alloc, "User #{d}\n{s}\n{s}", .{
+            user_id, avatar, post_time,
+        });
+        sidebar_owned = true;
+    }
+    defer if (sidebar_owned) alloc.free(sidebar_content);
+
+    var sidebar_style = zz.Style{};
+    sidebar_style = sidebar_style.width(@intCast(sidebar_width));
+    sidebar_style = sidebar_style.fg(if (is_original) zz.Color.cyan else zz.Color.gray(14));
+    const sidebar = try sidebar_style.render(alloc, sidebar_content);
+    defer alloc.free(sidebar);
+
+    // --- Body: render as markdown, constrained width ---
+    const inner_body_width: u16 = if (body_width > @as(u16, @intCast(sidebar_width)) + 4) body_width - @as(u16, @intCast(sidebar_width)) - 4 else 40;
+    var md = zz.Markdown.init();
+    md.width = inner_body_width;
+    const body_rendered = md.render(alloc, body_text) catch try alloc.dupe(u8, body_text);
+    defer alloc.free(body_rendered);
+
+    // --- Join sidebar + body horizontally ---
+    const joined = try zz.join.horizontal(alloc, .top, &.{ sidebar, body_rendered });
+    defer alloc.free(joined);
+
+    // --- Wrap in a bordered box ---
+    var box_style = zz.Style{};
+    box_style = box_style.borderAll(zz.Border.rounded);
+    if (is_focused) {
+        box_style = box_style.borderForeground(zz.Color.yellow);
+    } else {
+        box_style = box_style.borderForeground(if (is_original) zz.Color.cyan else zz.Color.gray(14));
+    }
+    box_style = box_style.paddingAll(1);
+    box_style = box_style.width(body_width);
+    return box_style.render(alloc, joined);
+}
+
+/// 'R' handler: request the bulletin body from the server if not yet loaded,
+/// otherwise surface a "already loaded" status.
+fn requestBulletinBody(ctx: *app.AppContext) void {
+    if (ctx.store.getById(state.bulletin_id)) |rec| {
+        var mut_rec = rec;
+        defer mut_rec.deinit(ctx.store.allocator);
+        if (mut_rec.body.len == 0) {
+            outbox.sendSingleBulletinRequest(ctx, state.bulletin_id);
+            ctx.status = "Requesting bulletin...";
+        } else {
+            ctx.status = "Bulletin already loaded.";
+        }
+    } else {
+        outbox.sendSingleBulletinRequest(ctx, state.bulletin_id);
+        ctx.status = "Requesting bulletin...";
+    }
+}
+
+/// 'C' handler: push the compose-response screen for this bulletin, unless
+/// the bulletin is already at the response cap.
+fn composeReply(ctx: *app.AppContext) zz.ScreenAction {
+    const count = ctx.store.countResponses(state.bulletin_id);
+    if (count >= types.max_response_id + 1) {
+        ctx.status = "Compose reply blocked — bulletin is full (1024 responses).";
+        return .none;
+    }
+    compose_response_screen.state.bulletin_id = state.bulletin_id;
+    return .{ .push = compose_response_screen.screen };
+}
+
+/// Clamp `scroll_offset` so the focused post stays within the visible
+/// viewport of `avail_for_posts` lines. `post_start_lines[i]` is the starting
+/// line of post `i` within the assembled posts area; `total_post_lines` is
+/// the total height of that area.
+fn computeScrollOffset(post_start_lines: []usize, total_post_lines: usize, avail_for_posts: usize, post_count: usize) void {
+    const focused_idx = if (state.selected_index < post_count) state.selected_index else 0;
+    const focused_start = post_start_lines[focused_idx];
+    const focused_end = if (focused_idx + 1 < post_count)
+        post_start_lines[focused_idx + 1]
+    else
+        total_post_lines;
+
+    // Scroll up if focused post is above the current view.
+    if (focused_start < state.scroll_offset) {
+        state.scroll_offset = focused_start;
+    }
+    // Scroll down if focused post extends below the visible area.
+    if (focused_end > state.scroll_offset + avail_for_posts) {
+        state.scroll_offset = focused_end - avail_for_posts;
+    }
+    // Clamp: don't scroll past the end.
+    if (total_post_lines > avail_for_posts) {
+        if (state.scroll_offset + avail_for_posts > total_post_lines) {
+            state.scroll_offset = total_post_lines - avail_for_posts;
+        }
+    } else {
+        state.scroll_offset = 0;
+    }
+    // Re-check visibility after clamping.
+    if (focused_start < state.scroll_offset) {
+        state.scroll_offset = focused_start;
+    }
+}
+
+/// Extract the visible window `[scroll_offset, scroll_offset+avail_for_posts)`
+/// from the assembled posts area. Returns a duplicate of the full area when
+/// it fits entirely within the viewport.
+fn extractVisiblePosts(alloc: std.mem.Allocator, posts_buf: []const u8, scroll_offset: usize, avail_for_posts: usize, total_post_lines: usize) anyerror![]const u8 {
+    if (total_post_lines <= avail_for_posts) return try alloc.dupe(u8, posts_buf);
+    // Split posts_buf into lines, take [scroll_offset, scroll_offset+avail_for_posts).
+    var lines: std.ArrayList([]const u8) = .empty;
+    defer lines.deinit(alloc);
+    var iter = std.mem.splitScalar(u8, posts_buf, '\n');
+    while (iter.next()) |line| {
+        try lines.append(alloc, line);
+    }
+    const start = scroll_offset;
+    const end = @min(start + avail_for_posts, lines.items.len);
+    var vbuf: std.ArrayList(u8) = .empty;
+    defer vbuf.deinit(alloc);
+    for (lines.items[start..end], 0..) |line, i| {
+        if (i > 0) try vbuf.append(alloc, '\n');
+        try vbuf.appendSlice(alloc, line);
+    }
+    return vbuf.toOwnedSlice(alloc);
+}
+
+/// Auto-fetch bulletin body and responses on entry when the link is
+/// high-bandwidth (direct TCP/IP). On low-bandwidth links only fill gaps in
+/// the cached responses and leave the body to the user's explicit 'R' press.
+fn autoFetchBulletinData(ctx: *app.AppContext) void {
     if (ctx.inbox.isHighBandwidth()) {
-        // High-bandwidth (direct TCP/IP): auto-fetch the bulletin body when
-        // not yet loaded, and pull all missing responses (from id 0 when
-        // none are cached, or the tail/gaps otherwise). This makes the
-        // detail view self-populate without the user pressing 'R' / 'M'.
         if (ctx.store.getById(state.bulletin_id)) |rec| {
             var mut_rec = rec;
             if (mut_rec.body.len == 0) {
@@ -419,8 +443,6 @@ fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
         }
         outbox.sendBulletinResponseRequest(ctx, state.bulletin_id);
     } else {
-        // Low-bandwidth (radio/meshcore): only fill gaps in the responses
-        // already cached, and leave the body to the user's explicit 'R' press.
         outbox.sendBulletinResponseRequestIfGapped(ctx, state.bulletin_id);
     }
 }
@@ -431,4 +453,8 @@ pub const vtable = zz.Screen.VTable{
     .on_enter = onEnter,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "Bulletin Detail" };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "Bulletin Detail",
+};

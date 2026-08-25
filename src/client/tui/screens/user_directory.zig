@@ -17,11 +17,11 @@
 const std = @import("std");
 const zz = @import("zigzag");
 
-const types = @import("../types.zig");
 const render = @import("../render.zig");
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
+const client_store = @import("../../client_store.zig");
 const settings_screen = @import("settings.zig");
 const user_detail_screen = @import("user_detail.zig");
 
@@ -69,6 +69,14 @@ pub fn deinit() void {
     state.user_id_input.deinit();
 }
 
+fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
+    _ = ptr;
+    if (!state.list_focused) {
+        state.form.initFocus();
+    }
+    state.ctx.status = "User Directory — request a user by id, or open a cached row.";
+}
+
 fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     _ = ptr;
     const ctx = state.ctx;
@@ -84,55 +92,7 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     const count = users.len;
 
     if (state.list_focused) {
-        if (k.key == .tab) {
-            state.list_focused = false;
-            state.form.initFocus();
-            return .none;
-        }
-        if (k.key == .up) {
-            if (state.selected_index == 0) {
-                state.list_focused = false;
-                state.request_button.focus();
-            } else {
-                state.selected_index -= 1;
-            }
-            return .none;
-        }
-        if (k.key == .down) {
-            if (count > 0 and state.selected_index < count - 1) {
-                state.selected_index += 1;
-            }
-            return .none;
-        }
-        if (k.key == .page_up) {
-            if (state.selected_index > 0) {
-                const step = @min(state.visible_count, state.selected_index);
-                state.selected_index -= @max(step, 1);
-            }
-            return .none;
-        }
-        if (k.key == .page_down) {
-            if (count > 0 and state.selected_index < count - 1) {
-                const step = @min(state.visible_count, count - 1 - state.selected_index);
-                state.selected_index += @max(step, 1);
-            }
-            return .none;
-        }
-        if (k.key == .home) {
-            state.selected_index = 0;
-            return .none;
-        }
-        if (k.key == .end) {
-            if (count > 0) state.selected_index = count - 1;
-            return .none;
-        }
-        if (k.key == .enter and !k.modifiers.ctrl and count > 0) {
-            if (state.selected_index < count) {
-                user_detail_screen.state.user_id = users[state.selected_index].id;
-                return .{ .push = user_detail_screen.screen };
-            }
-            return .none;
-        }
+        return handleListNavKey(k, users, count);
     } else {
         if ((k.key == .down or k.key == .tab) and state.request_button.focused and count > 0) {
             state.request_button.blur();
@@ -158,37 +118,6 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
         return .none;
     }
     return .none;
-}
-
-/// Parse the User ID input and send a `user_info_request` for that id.
-/// Returns true on success (so the caller can clear the input field).
-fn tryRequest() bool {
-    const ctx = state.ctx;
-    const id_str = state.user_id_input.value.items;
-    if (id_str.len == 0) {
-        ctx.status = "Enter a User ID.";
-        return false;
-    }
-    const uid = std.fmt.parseInt(u16, id_str, 10) catch {
-        ctx.status = "User ID is not a valid number.";
-        return false;
-    };
-    const ids = [_]u16{uid};
-    outbox.sendUserInfoRequest(ctx, &ids);
-    return ctx.outbox.busy;
-}
-
-/// Count the number of lines a rendered string occupies (trailing newline
-/// does not add an extra line). Mirrors the helper in `bulletins.zig` /
-/// `chat.zig`.
-fn countLines(s: []const u8) usize {
-    if (s.len == 0) return 0;
-    var n: usize = 1;
-    for (s) |c| {
-        if (c == '\n') n += 1;
-    }
-    if (s[s.len - 1] == '\n') n -= 1;
-    return n;
 }
 
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -230,20 +159,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     }
     state.visible_count = visible_items;
 
-    // --- Adjust scroll_offset so the selected row stays visible. ---
-    if (count > 0) {
-        if (state.selected_index >= count) state.selected_index = count - 1;
-        if (state.scroll_offset >= count) state.scroll_offset = count - 1;
-        if (state.selected_index < state.scroll_offset) {
-            state.scroll_offset = state.selected_index;
-        } else if (state.selected_index >= state.scroll_offset + visible_items) {
-            state.scroll_offset = state.selected_index - visible_items + 1;
-        }
-        const max_offset = if (count > visible_items) count - visible_items else 0;
-        if (state.scroll_offset > max_offset) state.scroll_offset = max_offset;
-    } else {
-        state.scroll_offset = 0;
-    }
+    adjustScrollOffset(count, visible_items);
     const start = state.scroll_offset;
     const end = @min(start + visible_items, count);
 
@@ -263,10 +179,148 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
             try std.fmt.allocPrint(alloc, "User Directory  ({d} cached)", .{count}),
     );
 
+    const dir_box = try renderUserList(alloc, ctx, users, start, end, visible_items, content_width);
+    defer alloc.free(dir_box);
+
+    var help_style = zz.Style{};
+    help_style = help_style.fg(zz.Color.gray(12));
+    help_style = help_style.inline_style(true);
+    const help = try help_style.render(
+        alloc,
+        "Tab/Up/Dn: navigate  PgUp/PgDn/Home/End: scroll  Enter: open  Ctrl+S/Request: fetch by id  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
+    );
+
+    const content = try std.fmt.allocPrint(
+        alloc,
+        "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
+        .{ styled_conn, styled_status, styled_bbs, dir_title, dir_box, form_view, help },
+    );
+    return render.fillTerminal(alloc, zz_ctx, content);
+}
+
+/// Parse the User ID input and send a `user_info_request` for that id.
+/// Returns true on success (so the caller can clear the input field).
+fn tryRequest() bool {
+    const ctx = state.ctx;
+    const id_str = state.user_id_input.value.items;
+    if (id_str.len == 0) {
+        ctx.status = "Enter a User ID.";
+        return false;
+    }
+    const uid = std.fmt.parseInt(u16, id_str, 10) catch {
+        ctx.status = "User ID is not a valid number.";
+        return false;
+    };
+    const ids = [_]u16{uid};
+    outbox.sendUserInfoRequest(ctx, &ids);
+    return ctx.outbox.busy;
+}
+
+/// Count the number of lines a rendered string occupies (trailing newline
+/// does not add an extra line). Mirrors the helper in `bulletins.zig` /
+/// `chat.zig`.
+fn countLines(s: []const u8) usize {
+    if (s.len == 0) return 0;
+    var n: usize = 1;
+    for (s) |c| {
+        if (c == '\n') n += 1;
+    }
+    if (s[s.len - 1] == '\n') n -= 1;
+    return n;
+}
+
+/// Handle a navigation key while the list is focused: Tab returns to the form,
+/// Up/Down/PgUp/PgDn/Home/End move the selection (clamped to `count`), Enter
+/// pushes the user detail screen for the selected row.
+fn handleListNavKey(k: zz.KeyEvent, users: []const client_store.User, count: usize) zz.ScreenAction {
+    if (k.key == .tab) {
+        state.list_focused = false;
+        state.form.initFocus();
+        return .none;
+    }
+    if (k.key == .up) {
+        if (state.selected_index == 0) {
+            state.list_focused = false;
+            state.request_button.focus();
+        } else {
+            state.selected_index -= 1;
+        }
+        return .none;
+    }
+    if (k.key == .down) {
+        if (count > 0 and state.selected_index < count - 1) {
+            state.selected_index += 1;
+        }
+        return .none;
+    }
+    if (k.key == .page_up) {
+        if (state.selected_index > 0) {
+            const step = @min(state.visible_count, state.selected_index);
+            state.selected_index -= @max(step, 1);
+        }
+        return .none;
+    }
+    if (k.key == .page_down) {
+        if (count > 0 and state.selected_index < count - 1) {
+            const step = @min(state.visible_count, count - 1 - state.selected_index);
+            state.selected_index += @max(step, 1);
+        }
+        return .none;
+    }
+    if (k.key == .home) {
+        state.selected_index = 0;
+        return .none;
+    }
+    if (k.key == .end) {
+        if (count > 0) state.selected_index = count - 1;
+        return .none;
+    }
+    if (k.key == .enter and !k.modifiers.ctrl and count > 0) {
+        if (state.selected_index < count) {
+            user_detail_screen.state.user_id = users[state.selected_index].id;
+            return .{ .push = user_detail_screen.screen };
+        }
+        return .none;
+    }
+    return .none;
+}
+
+/// Clamp `selected_index` and `scroll_offset` so the focused row stays within
+/// the visible viewport defined by `visible_items`.
+fn adjustScrollOffset(count: usize, visible_items: usize) void {
+    if (count > 0) {
+        if (state.selected_index >= count) state.selected_index = count - 1;
+        if (state.scroll_offset >= count) state.scroll_offset = count - 1;
+        if (state.selected_index < state.scroll_offset) {
+            state.scroll_offset = state.selected_index;
+        } else if (state.selected_index >= state.scroll_offset + visible_items) {
+            state.scroll_offset = state.selected_index - visible_items + 1;
+        }
+        const max_offset = if (count > visible_items) count - visible_items else 0;
+        if (state.scroll_offset > max_offset) state.scroll_offset = max_offset;
+    } else {
+        state.scroll_offset = 0;
+    }
+}
+
+/// Render the user list as a bordered, padded box of width `content_width`
+/// and `visible_items` rows. Each row shows the cursor marker, "this is you"
+/// star, user id, handle, callsign, and "(sysop)" tag. Lines wider than the
+/// box inner width are truncated. Padded with blank lines so the box height
+/// stays fixed.
+fn renderUserList(
+    alloc: std.mem.Allocator,
+    ctx: *app.AppContext,
+    users: []const client_store.User,
+    start: usize,
+    end: usize,
+    visible_items: usize,
+    content_width: u16,
+) anyerror![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     const inner_width: usize = if (content_width > 4) content_width - 4 else 36;
-    if (count == 0) {
+    if (users.len == 0) {
         try buf.appendSlice(alloc, "(no users cached — request one by id below)");
     } else {
         const my_uid = ctx.identity.my_user_id;
@@ -309,30 +363,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     box_style = box_style.borderForeground(if (state.list_focused) zz.Color.yellow else zz.Color.cyan);
     box_style = box_style.paddingAll(1);
     box_style = box_style.width(content_width);
-    const dir_box = try box_style.render(alloc, buf.items);
-
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
-        alloc,
-        "Tab/Up/Dn: navigate  PgUp/PgDn/Home/End: scroll  Enter: open  Ctrl+S/Request: fetch by id  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
-    );
-
-    const content = try std.fmt.allocPrint(
-        alloc,
-        "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
-        .{ styled_conn, styled_status, styled_bbs, dir_title, dir_box, form_view, help },
-    );
-    return render.fillTerminal(alloc, zz_ctx, content);
-}
-
-fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
-    _ = ptr;
-    if (!state.list_focused) {
-        state.form.initFocus();
-    }
-    state.ctx.status = "User Directory — request a user by id, or open a cached row.";
+    return box_style.render(alloc, buf.items);
 }
 
 pub const vtable = zz.Screen.VTable{
@@ -341,4 +372,8 @@ pub const vtable = zz.Screen.VTable{
     .on_enter = onEnter,
 };
 
-pub const screen = zz.Screen{ .ptr = @ptrCast(&state), .vtable = &vtable, .title = "User Directory" };
+pub const screen = zz.Screen{
+    .ptr = @ptrCast(&state),
+    .vtable = &vtable,
+    .title = "User Directory",
+};
