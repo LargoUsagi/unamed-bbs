@@ -5,7 +5,7 @@ A **Bulletin Board System (BBS)** with a client/server architecture, written in
 transports. The client is an interactive **TUI**.
 
 Every message on the wire is **Ed25519-signed**. so that transmissions carried over **HAM radio bands** where encryption
-is prohibited.  This allows for communicate where you can validate the source of a message on multiple turns of a
+is prohibited.  This allows for communication where you can validate the source of a message on multiple turns of a
 conversation in data modes.
 
 ## Features
