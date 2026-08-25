@@ -195,12 +195,6 @@ pub const BulletinResponseList = struct {
         pos += 1;
 
         var responses = try allocator.alloc(BulletinResponse, count);
-        errdefer {
-            for (responses) |*r| {
-                if (r.body.len != 0) allocator.free(r.body);
-            }
-            allocator.free(responses);
-        }
         var filled: usize = 0;
         errdefer {
             for (responses[0..filled]) |r| r.deinit(allocator);
@@ -209,7 +203,11 @@ pub const BulletinResponseList = struct {
 
         for (0..count) |i| {
             const fixed = 2 + 2 + 8 + 2;
-            if (data.len < pos + fixed) return null;
+            if (data.len < pos + fixed) {
+                for (responses[0..filled]) |r| r.deinit(allocator);
+                allocator.free(responses);
+                return null;
+            }
             const response_id = std.mem.readInt(u16, data[pos..][0..2], .little);
             pos += 2;
             const user_id = std.mem.readInt(u16, data[pos..][0..2], .little);
@@ -218,8 +216,16 @@ pub const BulletinResponseList = struct {
             pos += 8;
             const body_len: usize = std.mem.readInt(u16, data[pos..][0..2], .little);
             pos += 2;
-            if (data.len < pos + body_len) return null;
-            if (response_id > max_response_id) return null;
+            if (data.len < pos + body_len) {
+                for (responses[0..filled]) |r| r.deinit(allocator);
+                allocator.free(responses);
+                return null;
+            }
+            if (response_id > max_response_id) {
+                for (responses[0..filled]) |r| r.deinit(allocator);
+                allocator.free(responses);
+                return null;
+            }
             const body = if (body_len == 0)
                 try allocator.dupe(u8, &.{})
             else

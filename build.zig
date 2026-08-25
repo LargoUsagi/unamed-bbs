@@ -56,6 +56,23 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "sqlite", .module = sqlite.module("sqlite") },
         },
+        // Unishox2 is a C library that uses string.h / stdlib.h (memset,
+        // strlen, memcpy), so any compilation that includes this module
+        // (both client/server executables and the mod_tests test binary) must
+        // link libc. Declaring it here propagates the requirement to every
+        // consumer and lets the C source be compiled into the module once
+        // (see addCSourceFile below) instead of redundantly per-executable.
+        .link_libc = true,
+    });
+
+    // Compile and link the vendored Unishox2 C sources into the shared `bbs`
+    // module so its symbols are defined exactly once and propagate to both
+    // client/server executables and the mod_tests test binary. Defining them
+    // per-exe (as before) caused duplicate-symbol link errors once the module
+    // also compiled them; defining them here alone covers every consumer.
+    mod.addCSourceFile(.{
+        .file = b.path("lib/unishox2.c"),
+        .flags = &.{ "-std=c99", "-Ilib" },
     });
 
     // Here we define an executable. An executable needs to have a root module
@@ -88,7 +105,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             // Unishox2 is a C library that uses string.h / stdlib.h, so we need
-            // to link libc for memset/strlen/memcpy.
+            // to link libc for memset/strlen/memcpy. The C source itself is
+            // compiled into the shared `bbs` module (see `mod.addCSourceFile`
+            // above) so it is linked exactly once into every consumer.
             .link_libc = true,
             // List of modules available for import in source files part of the
             // root module.
@@ -104,13 +123,6 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "sqlite", .module = sqlite.module("sqlite") },
             },
         }),
-    });
-
-    // Compile and link the Unishox2 C sources (https://github.com/siara-cc/Unishox2)
-    // into the executable so the Zig wrapper can call its compression API via C interop.
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("lib/unishox2.c"),
-        .flags = &.{ "-std=c99", "-Ilib" },
     });
 
     // This declares intent for the executable to be installed into the
@@ -132,10 +144,6 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "sqlite", .module = sqlite.module("sqlite") },
             },
         }),
-    });
-    server_exe.root_module.addCSourceFile(.{
-        .file = b.path("lib/unishox2.c"),
-        .flags = &.{ "-std=c99", "-Ilib" },
     });
     b.installArtifact(server_exe);
 

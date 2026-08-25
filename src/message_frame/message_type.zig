@@ -390,7 +390,12 @@ test "encodePayload/decodePayload bulletin_list round trip" {
     try std.testing.expectEqualStrings("Weather Report", decoded.bulletin_list.bulletins[1].title);
 }
 
-test "encodePayload rejects bulletin with title > 255 bytes" {
+test "encodePayload accepts bulletin with title that compresses under 255 bytes" {
+    // A 256-byte run of 'x' is highly compressible under Unishox2, so the
+    // compressed title fits the 1-byte length field (<= 255) and encode
+    // succeeds. The
+    // encode returns null only when the *compressed* title
+    // exceeds 255 bytes.
     const long_title = [_]u8{'x'} ** 256;
     const payload: Payload = .{ .bulletin = .{
         .id = 1,
@@ -398,6 +403,22 @@ test "encodePayload rejects bulletin with title > 255 bytes" {
         .created_at = 0,
         .title = &long_title,
         .body = &.{},
+    } };
+    var buf: [max_encode_len]u8 = undefined;
+    try std.testing.expect(encodePayload(&buf, payload) != null);
+}
+
+test "encodePayload rejects bulletin exceeding max_encode_len" {
+    // High-entropy body Unishox2 cannot compress under the limit, pushing
+    // the total over max_encode_len (4096). Cycles 1..251 to avoid NUL bytes.
+    var big_body: [8192]u8 = undefined;
+    for (&big_body, 0..) |*b, i| b.* = @intCast((i % 251) + 1);
+    const payload: Payload = .{ .bulletin = .{
+        .id = 1,
+        .user_id = 0,
+        .created_at = 0,
+        .title = "x",
+        .body = &big_body,
     } };
     var buf: [max_encode_len]u8 = undefined;
     try std.testing.expect(encodePayload(&buf, payload) == null);
@@ -543,7 +564,7 @@ test "encodePayload/decodePayload bulletin_request tail_after round trip" {
     const n = encodePayload(&buf, payload) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(usize, 5), n);
 
-    const decoded = decodePayload(std.testing.allocator, .bulletin_request, buf[0..n]) orelse return error.DecodeFailed;
+    const decoded = (try decodePayload(std.testing.allocator, .bulletin_request, buf[0..n])) orelse return error.DecodeFailed;
     try std.testing.expectEqual(@as(u32, 42), decoded.bulletin_request.after_id);
 }
 
@@ -558,7 +579,7 @@ test "encodePayload/decodePayload bulletin_request range round trip" {
     const n = encodePayload(&buf, payload) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(usize, 9), n);
 
-    const decoded = decodePayload(std.testing.allocator, .bulletin_request, buf[0..n]) orelse return error.DecodeFailed;
+    const decoded = (try decodePayload(std.testing.allocator, .bulletin_request, buf[0..n])) orelse return error.DecodeFailed;
     try std.testing.expectEqual(@as(u32, 5), decoded.bulletin_request.start_id);
     try std.testing.expectEqual(@as(u32, 10), decoded.bulletin_request.end_id);
 }
@@ -573,7 +594,7 @@ test "encodePayload/decodePayload request_status round trip" {
     var buf: [max_encode_len]u8 = undefined;
     const n = encodePayload(&buf, payload) orelse return error.EncodeFailed;
 
-    const decoded = decodePayload(std.testing.allocator, .request_status, buf[0..n]) orelse return error.DecodeFailed;
+    const decoded = (try decodePayload(std.testing.allocator, .request_status, buf[0..n])) orelse return error.DecodeFailed;
     defer deinitPayload(std.testing.allocator, decoded);
     try std.testing.expectEqual(@as(u16, 42), decoded.request_status.request_id);
     try std.testing.expectEqual(RequestOutcome.success, decoded.request_status.outcome);

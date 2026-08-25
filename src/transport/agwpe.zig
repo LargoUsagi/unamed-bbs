@@ -167,10 +167,11 @@ fn extractAx25Info(raw: []const u8) ?[]const u8 {
 test "extractAx25Info with no digipeaters" {
     // Build a minimal AX.25 UI frame: dest(7) + src(7) + control(1) + PID(1) + info(5)
     var frame: [21]u8 = undefined;
-    // Destination address (6 bytes + ssid byte, extension bit set)
+    // Destination address (6 bytes + ssid byte, extension bit clear — the
+    // source follows so this is NOT the last address).
     @memset(frame[0..6], 'C');
-    frame[6] = 0x61; // SSID byte with extension bit (bit 0) set
-    // Source address (6 bytes + ssid byte, extension bit set)
+    frame[6] = 0x60; // SSID byte with extension bit (bit 0) clear
+    // Source address (6 bytes + ssid byte, extension bit set — last address).
     @memset(frame[7..13], 'K');
     frame[13] = 0x61; // SSID byte with extension bit set
     // Control + PID
@@ -784,7 +785,7 @@ test "drainIncoming drains newly appended messages after a partial drain" {
     const n = conn.drainIncoming(&dest2);
     try std.testing.expectEqual(@as(usize, 5), n);
     for (dest2[0..5], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast(i)), m.port);
+        try std.testing.expectEqual(@as(u4, @intCast(i + 3)), m.port);
     }
     try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
 }

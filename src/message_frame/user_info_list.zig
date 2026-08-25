@@ -65,11 +65,23 @@ pub const UserInfoList = struct {
             allocator.free(users);
         }
         for (0..count) |i| {
-            if (data.len < pos + 2) return null;
+            if (data.len < pos + 2) {
+                for (users[0..filled]) |u| u.deinit(allocator);
+                allocator.free(users);
+                return null;
+            }
             const entry_len: usize = std.mem.readInt(u16, data[pos..][0..2], .little);
             pos += 2;
-            if (data.len < pos + entry_len) return null;
-            const u = (try UserInfo.decode(allocator, data[pos .. pos + entry_len])) orelse return null;
+            if (data.len < pos + entry_len) {
+                for (users[0..filled]) |u| u.deinit(allocator);
+                allocator.free(users);
+                return null;
+            }
+            const u = (try UserInfo.decode(allocator, data[pos .. pos + entry_len])) orelse {
+                for (users[0..filled]) |entry| entry.deinit(allocator);
+                allocator.free(users);
+                return null;
+            };
             users[i] = u;
             filled = i + 1;
             pos += entry_len;

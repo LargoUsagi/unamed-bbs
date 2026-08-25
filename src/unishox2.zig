@@ -46,15 +46,23 @@ pub fn compress(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 ///
 /// `out_cap` is the size of the decompression buffer. It must be large enough
 /// to hold the original string; pass a generous bound when the original length
-/// is unknown.
+/// is unknown. Returns an owned allocation sized to exactly the decoded
+/// length, safe to `allocator.free()` directly.
 pub fn decompress(allocator: std.mem.Allocator, input: []const u8, out_cap: usize) ![]u8 {
     if (input.len == 0) return &.{};
     const out = try allocator.alloc(u8, out_cap);
     while (!mutex.tryLock()) {}
     defer mutex.unlock();
     const n = unishox2_decompress_simple(input.ptr, @intCast(input.len), out.ptr);
-    if (n < 0) return error.DecompressFailed;
-    return out[0..@intCast(n)];
+    if (n < 0) {
+        allocator.free(out);
+        return error.DecompressFailed;
+    }
+    // Shrink the allocation to the exact decoded length so the returned slice
+    // is a standalone allocation — the caller frees it with the same allocator
+    // and validating allocators (DebugAllocator/GPA) won't flag a sub-slice
+    // free as "Invalid free".
+    return try allocator.realloc(out, @intCast(n));
 }
 
 /// Decompress into a caller-provided fixed buffer (no allocation).

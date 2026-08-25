@@ -712,7 +712,7 @@ test "drainIncoming drains newly appended messages after a partial drain" {
     const n = conn.drainIncoming(&dest2);
     try std.testing.expectEqual(@as(usize, 5), n);
     for (dest2[0..5], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast(i)), m.port);
+        try std.testing.expectEqual(@as(u4, @intCast(i + 3)), m.port);
     }
     try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
 }

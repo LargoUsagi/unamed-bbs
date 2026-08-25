@@ -292,7 +292,7 @@ test "Reassembler: 10 multipart messages (group_id=0) drained 16 packets per tic
                 try testing.expect(msg.signature != null);
                 try testing.expectEqual(sigs[m], msg.signature.?);
                 seen[m] = true;
-                allocator.free(msg.payload);
+                std.heap.page_allocator.free(msg.payload);
             }
         }
         i = end;
@@ -344,7 +344,7 @@ test "Reassembler: straddled message completes on the next drain batch" {
                 completed += 1;
                 const m = msg.payload[0] - 1;
                 try testing.expectEqualSlices(u8, full[m], msg.payload);
-                allocator.free(msg.payload);
+                std.heap.page_allocator.free(msg.payload);
             }
         }
         i = end;

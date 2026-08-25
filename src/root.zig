@@ -22,3 +22,21 @@ pub const store = @import("store.zig");
 pub const unishox2 = @import("unishox2.zig");
 pub const avatar = @import("avatar.zig");
 
+// Reference every shared submodule so `zig build test`'s `mod_tests`
+// executable (rooted here) compiles and runs their `test {}` blocks.
+// Without this block the shared-module test binary compiles 0 tests and
+// every test in store.zig, signing.zig, unishox2.zig, avatar.zig,
+// transport/*.zig, and message_frame/*.zig is silently skipped.
+test {
+    _ = @import("transport/agwpe.zig");
+    _ = @import("transport/tcp.zig");
+    _ = @import("transport/transport.zig");
+    _ = @import("transport/endpoint.zig");
+    _ = @import("transport/reassembly.zig");
+    _ = @import("signing.zig");
+    _ = @import("message_frame.zig");
+    _ = @import("store.zig");
+    _ = @import("unishox2.zig");
+    _ = @import("avatar.zig");
+}
+
