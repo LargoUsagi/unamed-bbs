@@ -11,9 +11,10 @@
 //! never shared.
 //!
 //! Each bulletin has a server-assigned id, a u16 reference to a user row,
-//! a creation timestamp (Unix epoch), a title, and a Unishox2-compressed
-//! body. Records are queried sorted by `created_at` ascending so `listPage`
-//! returns bulletins in chronological order.
+//! a creation timestamp (Unix epoch), a title, and a body. Both title and
+//! body are stored as plain UTF-8 text (uncompressed) — they are compressed
+//! only on the wire. Records are queried sorted by `created_at` ascending so
+//! `listPage` returns bulletins in chronological order.
 //!
 //! Users are registered via the `registration` message type and stored in
 //! the `users` table. The `users.id` (a u16) is what `bulletins.user_id`
@@ -92,7 +93,8 @@ pub const BulletinRecord = struct {
 };
 
 /// A stored bulletin response with a per-bulletin sequential id. Owns its
-/// body slice (Unishox2-compressed). Shared by server and client stores.
+/// body slice (plain UTF-8 text — compressed only on the wire). Shared by
+/// server and client stores.
 pub const BulletinResponseRecord = struct {
     bulletin_id: u32,
     response_id: u16,
@@ -161,8 +163,8 @@ pub fn createUsersTable(db: *sqlite.Db) void {
 ///
 /// Each row is a reply to a bulletin. Uniqueness is enforced on
 /// `(bulletin_id, response_id)` — the server assigns a sequential
-/// `response_id` per bulletin, 0..1023. The body is stored as a Unishox2-
-/// compressed BLOB (matching how `bulletins.body` is stored).
+/// `response_id` per bulletin, 0..1023. The body is stored as plain UTF-8
+/// text in a BLOB column (compressed only on the wire).
 /// `create_datetime` is the server-set epoch timestamp (authoritative).
 pub fn createBulletinResponsesTable(db: *sqlite.Db) void {
     db.exec(

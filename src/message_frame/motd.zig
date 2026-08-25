@@ -9,6 +9,7 @@
 const std = @import("std");
 const frame = @import("frame.zig");
 const unishox2 = @import("../unishox2.zig");
+const limits = @import("limits.zig");
 
 const max_encode_len = frame.max_encode_len;
 
@@ -17,9 +18,12 @@ pub const Motd = struct {
     text: []const u8,
 
     /// Serialize into `buf`. Compresses the text with Unishox2. Returns the
-    /// number of bytes written, or `null` if the compressed text exceeds
-    /// `max_encode_len - 2` or `buf` is too small.
+    /// number of bytes written, or `null` if the uncompressed text exceeds
+    /// `max_body_len`, the compressed form exceeds `max_encode_len - 2`, or
+    /// `buf` is too small.
     pub fn encode(self: Motd, buf: []u8) ?usize {
+        if (self.text.len > limits.max_body_len) return null;
+
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
         defer arena.deinit();
         const compressed = unishox2.compress(arena.allocator(), self.text) catch return null;

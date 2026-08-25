@@ -41,6 +41,13 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
 
     const chat = decoded.?.chat;
 
+    if (chat.text.len > message_frame.max_chat_text_len) {
+        try ctx.stderr.writeAll("  error: chat text exceeds limit\n");
+        try ctx.stderr.flush();
+        outbox.sendChatReject(ctx, im.port, callsign, "Chat text too long.") catch {};
+        return;
+    }
+
     // The chat must be signed by the sender. The sender is identified by
     // their signing key, not by callsign — multiple users may share a
     // callsign, so we verify against every registered user's public key.

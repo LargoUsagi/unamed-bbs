@@ -39,4 +39,3 @@ test {
     _ = @import("unishox2.zig");
     _ = @import("avatar.zig");
 }
-

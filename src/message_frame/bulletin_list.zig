@@ -11,6 +11,7 @@
 const std = @import("std");
 const frame = @import("frame.zig");
 const unishox2 = @import("../unishox2.zig");
+const limits = @import("limits.zig");
 
 const max_encode_len = frame.max_encode_len;
 
@@ -50,6 +51,7 @@ pub const BulletinList = struct {
         pos += 1;
 
         for (self.bulletins) |entry| {
+            if (entry.title.len > limits.max_title_len) return null;
             const compressed_title = unishox2.compress(arena.allocator(), entry.title) catch return null;
             if (compressed_title.len > 255) return null;
             const needed = pos + 4 + 2 + 1 + compressed_title.len;

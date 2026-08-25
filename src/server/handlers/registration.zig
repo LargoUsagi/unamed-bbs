@@ -36,9 +36,9 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
 
     const reg = decoded.?.registration;
 
-    // Enforce maximum handle length (20 characters).
-    if (reg.handle.len > 20) {
-        try ctx.stderr.print("  error: handle \"{s}\" exceeds 20 chars\n", .{reg.handle});
+    // Enforce maximum handle length.
+    if (reg.handle.len > message_frame.max_handle_len) {
+        try ctx.stderr.print("  error: handle \"{s}\" exceeds {d} chars\n", .{ reg.handle, message_frame.max_handle_len });
         try ctx.stderr.flush();
         outbox.sendRegistrationAck(ctx, im.port, callsign, false, 0) catch {};
         return;

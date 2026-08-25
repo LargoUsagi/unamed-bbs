@@ -7,11 +7,13 @@
 //! updates that user's `avatar` column, and re-broadcasts the updated
 //! `user_info` so all clients refresh their cache.
 //!
-//! Wire layout:
-//!   `avatar_len` (u8, 1B) + `avatar` (up to 255 bytes)
+//! Wire layout (avatar is Unishox2-compressed):
+//!   `avatar_len` (u8, 1B, compressed byte count) + `avatar` (compressed)
 
 const std = @import("std");
 const frame = @import("frame.zig");
+const unishox2 = @import("../unishox2.zig");
+const limits = @import("limits.zig");
 
 const max_payload_len = frame.max_payload_len;
 
@@ -20,32 +22,46 @@ const max_payload_len = frame.max_payload_len;
 /// any field carried in the payload — so a forged callsign cannot be used to
 /// impersonate another user.
 pub const AvatarUpdate = struct {
-    /// New avatar text (7 lines joined by '\n', '█'/' ' cells). Max 255 bytes.
+    /// New avatar text (7 lines joined by '\n', '█'/' ' cells). The
+    /// uncompressed length must not exceed `limits.max_avatar_len` (255).
     avatar: []const u8,
 
-    /// Serialize into `buf`. Returns the number of bytes written, or `null` if
-    /// the avatar exceeds 255 bytes or `buf` is too small.
+    /// Serialize into `buf`. Compresses the avatar with Unishox2. Returns the
+    /// number of bytes written, or `null` if the uncompressed avatar exceeds
+    /// `max_avatar_len`, the compressed form exceeds 255 bytes, or `buf` is
+    /// too small.
     pub fn encode(self: AvatarUpdate, buf: []u8) ?usize {
-        if (self.avatar.len > 255) return null;
-        const total = 1 + self.avatar.len;
+        if (self.avatar.len > limits.max_avatar_len) return null;
+
+        var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+        defer arena.deinit();
+        const compressed = unishox2.compress(arena.allocator(), self.avatar) catch return null;
+        if (compressed.len > 255) return null;
+
+        const total = 1 + compressed.len;
         if (total > max_payload_len) return null;
         if (buf.len < total) return null;
 
         var pos: usize = 0;
-        buf[pos] = @intCast(self.avatar.len);
+        buf[pos] = @intCast(compressed.len);
         pos += 1;
-        @memcpy(buf[pos..][0..self.avatar.len], self.avatar);
-        pos += self.avatar.len;
+        @memcpy(buf[pos..][0..compressed.len], compressed);
+        pos += compressed.len;
         return pos;
     }
 
-    /// Deserialize from `data`. Allocates the `avatar` slice — the caller must
-    /// call `deinit` to free. Returns `null` for malformed data.
+    /// Deserialize from `data`. Decompresses the avatar. Allocates the
+    /// `avatar` slice — the caller must call `deinit` to free. Returns `null`
+    /// for malformed data.
     pub fn decode(allocator: std.mem.Allocator, data: []const u8) !?AvatarUpdate {
         if (data.len < 1) return null;
         const avatar_len: usize = data[0];
         if (data.len < 1 + avatar_len) return null;
-        const avatar = try allocator.dupe(u8, data[1 .. 1 + avatar_len]);
+        const avatar = if (avatar_len == 0)
+            try allocator.dupe(u8, &.{})
+        else
+            unishox2.decompress(allocator, data[1 .. 1 + avatar_len], 4096) catch
+                try allocator.dupe(u8, data[1 .. 1 + avatar_len]);
         return .{ .avatar = avatar };
     }
 
@@ -66,15 +82,14 @@ test "avatar_update encode/decode round trip" {
 
     var buf: [max_payload_len]u8 = undefined;
     const n = au.encode(&buf) orelse return error.EncodeFailed;
-    try std.testing.expectEqual(@as(usize, 1 + avatar_str.len), n);
 
     const decoded = (try AvatarUpdate.decode(allocator, buf[0..n])) orelse return error.DecodeFailed;
     defer decoded.deinit(allocator);
     try std.testing.expectEqualStrings(avatar_str, decoded.avatar);
 }
 
-test "avatar_update encode rejects avatar > 255 bytes" {
-    const long_avatar = [_]u8{'x'} ** 256;
+test "avatar_update encode rejects avatar > max_avatar_len bytes" {
+    const long_avatar = [_]u8{'x'} ** (limits.max_avatar_len + 1);
     var buf: [max_payload_len]u8 = undefined;
     try std.testing.expect((AvatarUpdate{ .avatar = &long_avatar }).encode(&buf) == null);
 }

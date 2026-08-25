@@ -22,6 +22,7 @@ const app = @import("app.zig");
 const signing = types.signing;
 const message_frame = types.message_frame;
 const transport_mod = @import("bbs").transport;
+const limits = message_frame;
 
 const AppContext = app.AppContext;
 const SendArgs = types.SendArgs;
@@ -467,8 +468,8 @@ pub fn requestMotd(ctx: *AppContext) void {
 }
 
 pub fn sendMotd(ctx: *AppContext, text: []const u8) void {
-    if (text.len > types.max_message_len) {
-        ctx.status = "MOTD exceeds 2048 characters.";
+    if (text.len > limits.max_body_len) {
+        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "MOTD exceeds {d} characters.", .{limits.max_body_len}) catch "MOTD exceeds 2048 characters.";
         return;
     }
     const p = prepareSend(ctx) orelse return;
@@ -490,8 +491,8 @@ pub fn sendRegistration(ctx: *AppContext, handle: []const u8) void {
         ctx.status = "Handle is empty.";
         return;
     }
-    if (handle.len > 20) {
-        ctx.status = "Handle exceeds 20 characters.";
+    if (handle.len > limits.max_handle_len) {
+        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Handle exceeds {d} characters.", .{limits.max_handle_len}) catch "Handle exceeds 20 characters.";
         return;
     }
     const callsign = ctx.connection.callsign_input.value.items;
@@ -534,16 +535,16 @@ pub fn sendBulletin(ctx: *AppContext, title: []const u8, body: []const u8) void 
         ctx.status = "Bulletin title is empty.";
         return;
     }
-    if (title.len > 80) {
-        ctx.status = "Title exceeds 80 characters.";
+    if (title.len > limits.max_title_len) {
+        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Title exceeds {d} characters.", .{limits.max_title_len}) catch "Title exceeds 80 characters.";
         return;
     }
     if (body.len == 0) {
         ctx.status = "Bulletin body is empty.";
         return;
     }
-    if (body.len > types.max_message_len) {
-        ctx.status = "Body exceeds 2048 characters.";
+    if (body.len > limits.max_body_len) {
+        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Body exceeds {d} characters.", .{limits.max_body_len}) catch "Body exceeds 2048 characters.";
         return;
     }
     const p = prepareSend(ctx) orelse return;
@@ -584,8 +585,8 @@ pub fn sendBulletinResponse(ctx: *AppContext, bulletin_id: u32, body: []const u8
         ctx.status = "Response body is empty.";
         return;
     }
-    if (body.len > types.max_message_len) {
-        ctx.status = "Response body exceeds 2048 characters.";
+    if (body.len > limits.max_body_len) {
+        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Response body exceeds {d} characters.", .{limits.max_body_len}) catch "Response body exceeds 2048 characters.";
         return;
     }
     const p = prepareSend(ctx) orelse return;
@@ -671,8 +672,8 @@ pub fn sendChat(ctx: *AppContext, message: []const u8) void {
         ctx.status = "Message is empty.";
         return;
     }
-    if (message.len > types.max_chat_text_len) {
-        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Chat exceeds {d} characters.", .{types.max_chat_text_len}) catch "Chat exceeds 256 characters.";
+    if (message.len > limits.max_chat_text_len) {
+        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Chat exceeds {d} characters.", .{limits.max_chat_text_len}) catch "Chat exceeds 256 characters.";
         return;
     }
     const p = prepareSend(ctx) orelse return;

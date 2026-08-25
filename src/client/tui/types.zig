@@ -26,7 +26,8 @@ pub const default_tcp_server_port = "9000";
 pub const default_callsign = "NOCALL";
 
 /// Maximum input message length in characters (before compression).
-pub const max_message_len: usize = 2048;
+/// Alias for `message_frame.max_body_len`.
+pub const max_message_len: usize = message_frame.max_body_len;
 
 /// Maximum value of a bulletin response id. The id space per bulletin is
 /// 0..1023 (a u10). When a bulletin reaches 1024 responses the reply UI is
@@ -44,8 +45,9 @@ pub const max_chat_log: usize = 50;
 pub const chat_text_len: usize = 256;
 
 /// Maximum chat text length in characters (client-side limit, before
-/// compression). The chat input is capped to this value.
-pub const max_chat_text_len: usize = 256;
+/// compression). The chat input is capped to this value. Alias for
+/// `message_frame.max_chat_text_len`.
+pub const max_chat_text_len: usize = message_frame.max_chat_text_len;
 
 /// Number of recent chat messages the client requests from the BBS in a
 /// `chat_history_request`.

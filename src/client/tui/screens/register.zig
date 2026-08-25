@@ -21,6 +21,8 @@
 const std = @import("std");
 const zz = @import("zigzag");
 
+const bbs = @import("bbs");
+
 const render = @import("../render.zig");
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
@@ -29,7 +31,7 @@ const identity_mod = @import("../identity.zig");
 const settings_screen = @import("settings.zig");
 
 /// Maximum handle length, enforced on the client and server.
-pub const max_handle_len: usize = 20;
+pub const max_handle_len: usize = bbs.message_frame.max_handle_len;
 
 pub const State = struct {
     ctx: *app.AppContext = undefined,

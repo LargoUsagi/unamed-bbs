@@ -390,13 +390,11 @@ test "encodePayload/decodePayload bulletin_list round trip" {
     try std.testing.expectEqualStrings("Weather Report", decoded.bulletin_list.bulletins[1].title);
 }
 
-test "encodePayload accepts bulletin with title that compresses under 255 bytes" {
-    // A 256-byte run of 'x' is highly compressible under Unishox2, so the
-    // compressed title fits the 1-byte length field (<= 255) and encode
-    // succeeds. The
-    // encode returns null only when the *compressed* title
-    // exceeds 255 bytes.
-    const long_title = [_]u8{'x'} ** 256;
+test "encodePayload rejects bulletin with title > max_title_len bytes" {
+    // The uncompressed title length is checked before compression; a title
+    // exceeding limits.max_title_len (80) is rejected regardless of how well
+    // it would compress.
+    const long_title = [_]u8{'x'} ** 81;
     const payload: Payload = .{ .bulletin = .{
         .id = 1,
         .user_id = 0,
@@ -405,20 +403,17 @@ test "encodePayload accepts bulletin with title that compresses under 255 bytes"
         .body = &.{},
     } };
     var buf: [max_encode_len]u8 = undefined;
-    try std.testing.expect(encodePayload(&buf, payload) != null);
+    try std.testing.expect(encodePayload(&buf, payload) == null);
 }
 
-test "encodePayload rejects bulletin exceeding max_encode_len" {
-    // High-entropy body Unishox2 cannot compress under the limit, pushing
-    // the total over max_encode_len (4096). Cycles 1..251 to avoid NUL bytes.
-    var big_body: [8192]u8 = undefined;
-    for (&big_body, 0..) |*b, i| b.* = @intCast((i % 251) + 1);
+test "encodePayload rejects bulletin with body > max_body_len bytes" {
+    const long_body = [_]u8{'x'} ** 2049;
     const payload: Payload = .{ .bulletin = .{
         .id = 1,
         .user_id = 0,
         .created_at = 0,
         .title = "x",
-        .body = &big_body,
+        .body = &long_body,
     } };
     var buf: [max_encode_len]u8 = undefined;
     try std.testing.expect(encodePayload(&buf, payload) == null);

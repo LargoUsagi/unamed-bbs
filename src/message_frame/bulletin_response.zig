@@ -46,6 +46,7 @@
 const std = @import("std");
 const frame = @import("frame.zig");
 const unishox2 = @import("../unishox2.zig");
+const limits = @import("limits.zig");
 
 const max_encode_len = frame.max_encode_len;
 
@@ -71,10 +72,12 @@ pub const BulletinResponse = struct {
     body: []const u8,
 
     /// Serialize into `buf`. Compresses the body with Unishox2. Returns the
-    /// number of bytes written, or `null` if the compressed body exceeds
-    /// `max_encode_len - 18` or `response_id` exceeds `max_response_id`.
+    /// number of bytes written, or `null` if the uncompressed body exceeds
+    /// `max_body_len`, the compressed form exceeds `max_encode_len - 18`, or
+    /// `response_id` exceeds `max_response_id`.
     pub fn encode(self: BulletinResponse, buf: []u8) ?usize {
         if (self.response_id > max_response_id) return null;
+        if (self.body.len > limits.max_body_len) return null;
 
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
         defer arena.deinit();
@@ -151,6 +154,7 @@ pub const BulletinResponseList = struct {
         if (self.responses.len > 255) return null;
         for (self.responses) |r| {
             if (r.response_id > max_response_id) return null;
+            if (r.body.len > limits.max_body_len) return null;
         }
 
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);

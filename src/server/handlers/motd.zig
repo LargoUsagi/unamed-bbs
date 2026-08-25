@@ -54,6 +54,13 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
     defer message_frame.deinitPayload(allocator, decoded.?);
 
     const new_motd = decoded.?.motd.text;
+
+    if (new_motd.len > message_frame.max_body_len) {
+        try ctx.stderr.writeAll("  error: MOTD text exceeds limit\n");
+        try ctx.stderr.flush();
+        return;
+    }
+
     try ctx.stderr.print("  sysop set new MOTD: \"{s}\"\n", .{new_motd});
     try ctx.stderr.flush();
 

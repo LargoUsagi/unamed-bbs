@@ -52,6 +52,13 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
     defer message_frame.deinitPayload(allocator, decoded.?);
 
     const new_avatar = decoded.?.avatar_update.avatar;
+
+    if (new_avatar.len > message_frame.max_avatar_len) {
+        try ctx.stderr.writeAll("  error: avatar exceeds limit\n");
+        try ctx.stderr.flush();
+        return;
+    }
+
     try ctx.stderr.print("  updating avatar for id={d} handle=\"{s}\" ({d} bytes)\n", .{
         user.id, user.handle, new_avatar.len,
     });

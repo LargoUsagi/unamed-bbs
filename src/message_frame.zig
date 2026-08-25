@@ -35,6 +35,7 @@ const user_info = @import("message_frame/user_info.zig");
 const user_info_list = @import("message_frame/user_info_list.zig");
 const request_status = @import("message_frame/request_status.zig");
 const motd = @import("message_frame/motd.zig");
+const limits = @import("message_frame/limits.zig");
 
 // Frame layout constants (from `frame.zig`).
 pub const protocol_version = frame.protocol_version;
@@ -83,6 +84,15 @@ pub const Chat = message_type.Chat;
 pub const ChatHistoryRequest = message_type.ChatHistoryRequest;
 pub const AvatarUpdate = message_type.AvatarUpdate;
 pub const chat_max_text_len = message_type.chat_max_text_len;
+
+// Uncompressed string field length limits (from `limits.zig`).
+pub const max_handle_len = limits.max_handle_len;
+pub const max_callsign_len = limits.max_callsign_len;
+pub const max_title_len = limits.max_title_len;
+pub const max_body_len = limits.max_body_len;
+pub const max_chat_text_len = limits.max_chat_text_len;
+pub const max_avatar_len = limits.max_avatar_len;
+pub const max_detail_len = limits.max_detail_len;
 
 // ---------------------------------------------------------------------------
 // IncomingMessage — transport-neutral decoded message
@@ -193,4 +203,5 @@ test {
     _ = @import("message_frame/chat_history_request.zig");
     _ = @import("message_frame/avatar_update.zig");
     _ = @import("message_frame/user_info_list.zig");
+    _ = @import("message_frame/limits.zig");
 }

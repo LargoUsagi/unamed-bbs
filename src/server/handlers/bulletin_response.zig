@@ -35,6 +35,12 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
 
     const resp = decoded.?.bulletin_response;
 
+    if (resp.body.len > message_frame.max_body_len) {
+        try ctx.stderr.writeAll("  error: response body exceeds limit\n");
+        try ctx.stderr.flush();
+        return;
+    }
+
     // Identify the sender by their signing key — try to verify the
     // signature against every registered user's public key. This is
     // correct even when multiple users share a callsign (e.g. "NOCALL").

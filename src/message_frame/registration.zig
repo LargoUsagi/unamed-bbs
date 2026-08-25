@@ -8,11 +8,13 @@
 //! spoofed by the sender) and replies with a `registration_ack` containing
 //! the server-assigned u16 user id.
 //!
-//! Wire layout:
-//!   `handle_len` (u8) + `handle` + `public_key` (32B)
+//! Wire layout (handle is Unishox2-compressed):
+//!   `handle_len` (u8, compressed byte count) + `handle` (compressed) + `public_key` (32B)
 
 const std = @import("std");
 const frame = @import("frame.zig");
+const unishox2 = @import("../unishox2.zig");
+const limits = @import("limits.zig");
 
 const max_payload_len = frame.max_payload_len;
 pub const public_key_len: usize = 32;
@@ -26,33 +28,46 @@ pub const Registration = struct {
     /// The author's Ed25519 public key (32 bytes).
     public_key: [public_key_len]u8,
 
-    /// Serialize into `buf`. Returns the number of bytes written, or `null` if
-    /// handle exceeds 255 bytes or the total exceeds `max_payload_len`.
+    /// Serialize into `buf`. Compresses the handle with Unishox2. Returns the
+    /// number of bytes written, or `null` if the uncompressed handle exceeds
+    /// `max_handle_len`, the compressed form exceeds 255 bytes, or `buf` is
+    /// too small.
     pub fn encode(self: Registration, buf: []u8) ?usize {
-        if (self.handle.len > 255) return null;
-        const total = 1 + self.handle.len + public_key_len;
+        if (self.handle.len > limits.max_handle_len) return null;
+
+        var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+        defer arena.deinit();
+        const compressed = unishox2.compress(arena.allocator(), self.handle) catch return null;
+        if (compressed.len > 255) return null;
+
+        const total = 1 + compressed.len + public_key_len;
         if (total > max_payload_len) return null;
         if (buf.len < total) return null;
 
         var pos: usize = 0;
-        buf[pos] = @intCast(self.handle.len);
+        buf[pos] = @intCast(compressed.len);
         pos += 1;
-        @memcpy(buf[pos..][0..self.handle.len], self.handle);
-        pos += self.handle.len;
+        @memcpy(buf[pos..][0..compressed.len], compressed);
+        pos += compressed.len;
         @memcpy(buf[pos..][0..public_key_len], &self.public_key);
         pos += public_key_len;
         return pos;
     }
 
-    /// Deserialize from `data`. Allocates the `handle` slice — the caller must
-    /// call `deinit` to free. Returns `null` for malformed data.
+    /// Deserialize from `data`. Decompresses the handle. Allocates the
+    /// `handle` slice — the caller must call `deinit` to free. Returns `null`
+    /// for malformed data.
     pub fn decode(allocator: std.mem.Allocator, data: []const u8) !?Registration {
         if (data.len < 1) return null;
         var pos: usize = 0;
         const handle_len: usize = data[pos];
         pos += 1;
         if (data.len < pos + handle_len + public_key_len) return null;
-        const handle = try allocator.dupe(u8, data[pos .. pos + handle_len]);
+        const handle = if (handle_len == 0)
+            try allocator.dupe(u8, &.{})
+        else
+            unishox2.decompress(allocator, data[pos .. pos + handle_len], 4096) catch
+                try allocator.dupe(u8, data[pos .. pos + handle_len]);
         pos += handle_len;
         var public_key: [public_key_len]u8 = undefined;
         @memcpy(&public_key, data[pos..][0..public_key_len]);
@@ -85,8 +100,8 @@ test "registration encode/decode round trip" {
     try std.testing.expectEqualSlices(u8, &pk, &decoded.public_key);
 }
 
-test "registration encode rejects handle > 255 bytes" {
-    const long_handle = [_]u8{'x'} ** 256;
+test "registration encode rejects handle > max_handle_len bytes" {
+    const long_handle = [_]u8{'x'} ** (limits.max_handle_len + 1);
     var buf: [max_payload_len]u8 = undefined;
     try std.testing.expect((Registration{
         .handle = &long_handle,

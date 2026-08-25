@@ -17,6 +17,7 @@
 const std = @import("std");
 const frame = @import("frame.zig");
 const unishox2 = @import("../unishox2.zig");
+const limits = @import("limits.zig");
 
 const max_encode_len = frame.max_encode_len;
 
@@ -32,15 +33,19 @@ pub const Bulletin = struct {
     /// Creation timestamp as a Unix epoch value (seconds since 1970-01-01).
     /// Used for chronological sorting.
     created_at: u64,
-    /// Human-readable title (max 255 bytes compressed on the wire).
+    /// Human-readable title (max `limits.max_title_len` bytes uncompressed).
     title: []const u8,
-    /// Plain text body.
+    /// Plain text body (max `limits.max_body_len` bytes uncompressed).
     body: []const u8,
 
     /// Serialize into `buf`. Compresses both the title and body with Unishox2
     /// before writing. Returns the number of bytes written, or `null` if the
-    /// compressed title exceeds 255 bytes or the total exceeds `max_encode_len`.
+    /// uncompressed title exceeds `max_title_len`, the compressed title exceeds
+    /// 255 bytes (u8 length field), or the total exceeds `max_encode_len`.
     pub fn encode(self: Bulletin, buf: []u8) ?usize {
+        if (self.title.len > limits.max_title_len) return null;
+        if (self.body.len > limits.max_body_len) return null;
+
         var title_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
         defer title_arena.deinit();
         const compressed_title = unishox2.compress(title_arena.allocator(), self.title) catch return null;
@@ -148,35 +153,30 @@ test "bulletin encode/decode round trip" {
     try std.testing.expectEqualStrings(body, decoded.body);
 }
 
-test "bulletin encode accepts title that compresses under 255 bytes" {
-    // A 256-byte run of 'x' is highly compressible under Unishox2, so the
-    // compressed title fits the 1-byte length field (<= 255) and encode
-    // succeeds. The encode returns null only when the *compressed* title
-    // exceeds 255 bytes.
-    const long_title = [_]u8{'x'} ** 256;
+test "bulletin encode rejects title > max_title_len bytes" {
+    // The uncompressed title length is checked before compression; a title
+    // exceeding limits.max_title_len (80) is rejected regardless of how well
+    // it would compress.
+    const long_title = [_]u8{'x'} ** (limits.max_title_len + 1);
     var buf: [max_encode_len]u8 = undefined;
-    const n = (Bulletin{
+    try std.testing.expect((Bulletin{
         .id = 1,
         .user_id = 0,
         .created_at = 0,
         .title = &long_title,
         .body = &.{},
-    }).encode(&buf);
-    try std.testing.expect(n != null);
+    }).encode(&buf) == null);
 }
 
-test "bulletin encode rejects payload exceeding max_encode_len" {
-    // High-entropy body Unishox2 cannot compress under the limit, pushing
-    // the total over max_encode_len (4096). Cycles 1..251 to avoid NUL bytes.
-    var big_body: [8192]u8 = undefined;
-    for (&big_body, 0..) |*b, i| b.* = @intCast((i % 251) + 1);
+test "bulletin encode rejects body > max_body_len bytes" {
+    const long_body = [_]u8{'x'} ** (limits.max_body_len + 1);
     var buf: [max_encode_len]u8 = undefined;
     try std.testing.expect((Bulletin{
         .id = 1,
         .user_id = 0,
         .created_at = 0,
         .title = "x",
-        .body = &big_body,
+        .body = &long_body,
     }).encode(&buf) == null);
 }
 

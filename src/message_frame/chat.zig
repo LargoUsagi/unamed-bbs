@@ -25,12 +25,14 @@
 const std = @import("std");
 const frame = @import("frame.zig");
 const unishox2 = @import("../unishox2.zig");
+const limits = @import("limits.zig");
 
 const max_encode_len = frame.max_encode_len;
 
 /// Maximum chat text length in characters (client-side limit, before
-/// compression). The TUI input is capped to this value.
-pub const max_chat_text_len: usize = 256;
+/// compression). The TUI input is capped to this value. Re-exported from
+/// `limits.max_chat_text_len`.
+pub const max_chat_text_len: usize = limits.max_chat_text_len;
 
 /// A single chat message. `text` is plain (uncompressed); `encode`
 /// compresses it for the wire and `decode` decompresses it.
@@ -46,9 +48,12 @@ pub const Chat = struct {
     text: []const u8,
 
     /// Serialize into `buf`. Compresses the text with Unishox2. Returns the
-    /// number of bytes written, or `null` if the compressed text exceeds
-    /// `max_encode_len - 12` or `buf` is too small.
+    /// number of bytes written, or `null` if the uncompressed text exceeds
+    /// `max_chat_text_len`, the compressed form exceeds `max_encode_len - 12`,
+    /// or `buf` is too small.
     pub fn encode(self: Chat, buf: []u8) ?usize {
+        if (self.text.len > limits.max_chat_text_len) return null;
+
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
         defer arena.deinit();
         const compressed = unishox2.compress(arena.allocator(), self.text) catch return null;
@@ -164,4 +169,14 @@ test "chat decode rejects truncated text" {
     const bad = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x01 };
     const result = try Chat.decode(allocator, &bad);
     try std.testing.expect(result == null);
+}
+
+test "chat encode rejects text > max_chat_text_len bytes" {
+    const long_text = [_]u8{'A'} ** (max_chat_text_len + 1);
+    var buf: [max_encode_len]u8 = undefined;
+    try std.testing.expect((Chat{
+        .timestamp = 0,
+        .user_id = 0,
+        .text = &long_text,
+    }).encode(&buf) == null);
 }

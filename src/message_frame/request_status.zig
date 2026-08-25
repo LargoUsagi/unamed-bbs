@@ -8,6 +8,7 @@
 const std = @import("std");
 const frame = @import("frame.zig");
 const unishox2 = @import("../unishox2.zig");
+const limits = @import("limits.zig");
 
 const max_encode_len = frame.max_encode_len;
 
@@ -37,8 +38,12 @@ pub const RequestStatus = struct {
     detail: []const u8 = "",
 
     /// Serialize into `buf`. Compresses the detail text with Unishox2.
-    /// Returns the number of bytes written, or `null` on overflow.
+    /// Returns the number of bytes written, or `null` if the uncompressed
+    /// detail exceeds `max_detail_len`, the compressed form exceeds
+    /// `max_encode_len - 5`, or `buf` is too small.
     pub fn encode(self: RequestStatus, buf: []u8) ?usize {
+        if (self.detail.len > limits.max_detail_len) return null;
+
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
         defer arena.deinit();
         const compressed = unishox2.compress(arena.allocator(), self.detail) catch return null;

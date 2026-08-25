@@ -9,17 +9,20 @@
 //! more user_ids it doesn't have cached. The server responds with one
 //! `user_info` message per requested id (skipping any unknown ids).
 //!
-//! Wire layout:
+//! Wire layout (handle, callsign, and avatar are Unishox2-compressed):
 //!   `user_info`:
 //!     `id` (u16 LE, 2B) + `registered_datetime` (u64 LE, 8B) +
-//!     `handle_len` (u8, 1B) + `handle` + `callsign_len` (u8, 1B) + `callsign`
+//!     `handle_len` (u8, compressed byte count) + `handle` (compressed) +
+//!     `callsign_len` (u8, compressed byte count) + `callsign` (compressed)
 //!     + `public_key` (32B) + `is_sysop` (u8, 1B) +
-//!     `avatar_len` (u8, 1B) + `avatar`
+//!     `avatar_len` (u8, compressed byte count) + `avatar` (compressed)
 //!   `user_info_request`:
 //!     `count` (u8, 1B) + per entry: `user_id` (u16 LE, 2B)
 
 const std = @import("std");
 const frame = @import("frame.zig");
+const unishox2 = @import("../unishox2.zig");
+const limits = @import("limits.zig");
 
 const max_payload_len = frame.max_payload_len;
 
@@ -45,15 +48,28 @@ pub const UserInfo = struct {
     /// slice after `decode`.
     avatar: []const u8 = &.{},
 
-    /// Serialize into `buf`. Returns the number of bytes written, or `null` if
-    /// the handle, callsign, or avatar exceed 255 bytes or the total exceeds
-    /// `max_payload_len`.
+    /// Serialize into `buf`. Compresses handle, callsign, and avatar with
+    /// Unishox2. Returns the number of bytes written, or `null` if any
+    /// uncompressed field exceeds its limit, any compressed field exceeds
+    /// 255 bytes, or `buf` is too small.
     pub fn encode(self: UserInfo, buf: []u8) ?usize {
-        if (self.handle.len > 255) return null;
-        if (self.callsign.len > 255) return null;
-        if (self.avatar.len > 255) return null;
+        if (self.handle.len > limits.max_handle_len) return null;
+        if (self.callsign.len > limits.max_callsign_len) return null;
+        if (self.avatar.len > limits.max_avatar_len) return null;
+
+        var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        const compressed_handle = unishox2.compress(alloc, self.handle) catch return null;
+        if (compressed_handle.len > 255) return null;
+        const compressed_callsign = unishox2.compress(alloc, self.callsign) catch return null;
+        if (compressed_callsign.len > 255) return null;
+        const compressed_avatar = unishox2.compress(alloc, self.avatar) catch return null;
+        if (compressed_avatar.len > 255) return null;
+
         const fixed = 2 + 8 + 1 + 1 + public_key_len + 1 + 1;
-        const total = fixed + self.handle.len + self.callsign.len + self.avatar.len;
+        const total = fixed + compressed_handle.len + compressed_callsign.len + compressed_avatar.len;
         if (total > max_payload_len) return null;
         if (buf.len < total) return null;
 
@@ -62,27 +78,28 @@ pub const UserInfo = struct {
         pos += 2;
         std.mem.writeInt(u64, buf[pos..][0..8], self.registered_datetime, .little);
         pos += 8;
-        buf[pos] = @intCast(self.handle.len);
+        buf[pos] = @intCast(compressed_handle.len);
         pos += 1;
-        @memcpy(buf[pos..][0..self.handle.len], self.handle);
-        pos += self.handle.len;
-        buf[pos] = @intCast(self.callsign.len);
+        @memcpy(buf[pos..][0..compressed_handle.len], compressed_handle);
+        pos += compressed_handle.len;
+        buf[pos] = @intCast(compressed_callsign.len);
         pos += 1;
-        @memcpy(buf[pos..][0..self.callsign.len], self.callsign);
-        pos += self.callsign.len;
+        @memcpy(buf[pos..][0..compressed_callsign.len], compressed_callsign);
+        pos += compressed_callsign.len;
         @memcpy(buf[pos..][0..public_key_len], &self.public_key);
         pos += public_key_len;
         buf[pos] = if (self.is_sysop) 1 else 0;
         pos += 1;
-        buf[pos] = @intCast(self.avatar.len);
+        buf[pos] = @intCast(compressed_avatar.len);
         pos += 1;
-        @memcpy(buf[pos..][0..self.avatar.len], self.avatar);
-        pos += self.avatar.len;
+        @memcpy(buf[pos..][0..compressed_avatar.len], compressed_avatar);
+        pos += compressed_avatar.len;
         return pos;
     }
 
-    /// Deserialize from `data`. Allocates `handle`, `callsign`, and `avatar` —
-    /// the caller must call `deinit` to free. Returns `null` for malformed data.
+    /// Deserialize from `data`. Decompresses handle, callsign, and avatar.
+    /// Allocates each slice — the caller must call `deinit` to free. Returns
+    /// `null` for malformed data.
     pub fn decode(allocator: std.mem.Allocator, data: []const u8) !?UserInfo {
         const min_len = 2 + 8 + 1 + 1 + public_key_len + 1 + 1;
         if (data.len < min_len) return null;
@@ -94,12 +111,25 @@ pub const UserInfo = struct {
         const handle_len: usize = data[pos];
         pos += 1;
         if (data.len < pos + handle_len + 1 + public_key_len + 1 + 1) return null;
-        const handle = try allocator.dupe(u8, data[pos .. pos + handle_len]);
+        const handle = if (handle_len == 0)
+            try allocator.dupe(u8, &.{})
+        else
+            unishox2.decompress(allocator, data[pos .. pos + handle_len], 4096) catch
+                try allocator.dupe(u8, data[pos .. pos + handle_len]);
+        errdefer allocator.free(handle);
         pos += handle_len;
         const callsign_len: usize = data[pos];
         pos += 1;
-        if (data.len < pos + callsign_len + public_key_len + 1 + 1) return null;
-        const callsign = try allocator.dupe(u8, data[pos .. pos + callsign_len]);
+        if (data.len < pos + callsign_len + public_key_len + 1 + 1) {
+            allocator.free(handle);
+            return null;
+        }
+        const callsign = if (callsign_len == 0)
+            try allocator.dupe(u8, &.{})
+        else
+            unishox2.decompress(allocator, data[pos .. pos + callsign_len], 4096) catch
+                try allocator.dupe(u8, data[pos .. pos + callsign_len]);
+        errdefer allocator.free(callsign);
         pos += callsign_len;
         var public_key: [public_key_len]u8 = undefined;
         @memcpy(&public_key, data[pos..][0..public_key_len]);
@@ -108,8 +138,16 @@ pub const UserInfo = struct {
         pos += 1;
         const avatar_len: usize = data[pos];
         pos += 1;
-        if (data.len < pos + avatar_len) return null;
-        const avatar = try allocator.dupe(u8, data[pos .. pos + avatar_len]);
+        if (data.len < pos + avatar_len) {
+            allocator.free(handle);
+            allocator.free(callsign);
+            return null;
+        }
+        const avatar = if (avatar_len == 0)
+            try allocator.dupe(u8, &.{})
+        else
+            unishox2.decompress(allocator, data[pos .. pos + avatar_len], 4096) catch
+                try allocator.dupe(u8, data[pos .. pos + avatar_len]);
 
         return .{
             .id = id,
@@ -202,8 +240,8 @@ test "user_info encode/decode round trip" {
     try std.testing.expectEqualStrings(avatar_str, decoded.avatar);
 }
 
-test "user_info encode rejects handle > 255 bytes" {
-    const long_handle = [_]u8{'x'} ** 256;
+test "user_info encode rejects handle > max_handle_len bytes" {
+    const long_handle = [_]u8{'x'} ** (limits.max_handle_len + 1);
     var buf: [max_payload_len]u8 = undefined;
     try std.testing.expect((UserInfo{
         .id = 1,
@@ -214,8 +252,8 @@ test "user_info encode rejects handle > 255 bytes" {
     }).encode(&buf) == null);
 }
 
-test "user_info encode rejects avatar > 255 bytes" {
-    const long_avatar = [_]u8{'x'} ** 256;
+test "user_info encode rejects avatar > max_avatar_len bytes" {
+    const long_avatar = [_]u8{'x'} ** (limits.max_avatar_len + 1);
     var buf: [max_payload_len]u8 = undefined;
     try std.testing.expect((UserInfo{
         .id = 1,
