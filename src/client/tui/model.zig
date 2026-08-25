@@ -25,6 +25,7 @@ const compose_bulletin = @import("screens/compose_bulletin.zig");
 const compose_response = @import("screens/compose_response.zig");
 const register = @import("screens/register.zig");
 const account = @import("screens/account.zig");
+const avatar_edit = @import("screens/avatar_edit.zig");
 const logout_confirm = @import("screens/logout_confirm.zig");
 const server_settings = @import("screens/server_settings.zig");
 const request_by_id = @import("screens/request_by_id.zig");
@@ -62,6 +63,7 @@ pub fn init(self: *Model, ctx: *zz.Context) zz.Cmd(Msg) {
     compose_response.init(&self.ctx);
     register.init(&self.ctx);
     account.init(&self.ctx);
+    avatar_edit.init(&self.ctx);
     logout_confirm.init(&self.ctx);
     server_settings.init(&self.ctx);
     request_by_id.init(&self.ctx);
@@ -193,6 +195,7 @@ pub fn deinit(self: *Model) void {
     compose_response.deinit();
     register.deinit();
     account.deinit();
+    avatar_edit.deinit();
     logout_confirm.deinit();
     server_settings.deinit();
     request_by_id.deinit();
