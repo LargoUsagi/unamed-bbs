@@ -220,10 +220,12 @@ pub const Inbox = struct {
 };
 
 /// Learn the BBS (server) public key from a signed server-role `public_key`
-/// message, unless the key was hard-locked via --bbs-key.
+/// message, unless the key was hard-locked via --bbs-key. Callsigns are
+/// optional at the session boundary (only AGWPE provides link-layer
+/// identity), so key learning does not require one.
 fn maybeLearnBbsKey(ctx: *AppContext, msg: messaging.Message) void {
     if (msg.msg_type == .public_key and msg.has_public_key and
-        msg.pub_key_role == .server and msg.has_callsign)
+        msg.pub_key_role == .server)
     {
         if (!ctx.identity.bbs_key_locked and ctx.identity.bbs_key == null) {
             ctx.identity.bbs_key = msg.public_key;

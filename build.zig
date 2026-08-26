@@ -33,6 +33,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Serial port configuration library (https://github.com/ZigEmbeddedGroup/serial),
+    // used by the MeshCore link transport to open/configure the radio's serial port.
+    const serial = b.dependency("serial", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Zig modules are the preferred way of making Zig code available to consumers.
@@ -55,6 +62,7 @@ pub fn build(b: *std.Build) void {
         // the sqlite dependency must be available inside this module too.
         .imports = &.{
             .{ .name = "sqlite", .module = sqlite.module("sqlite") },
+            .{ .name = "serial", .module = serial.module("serial") },
         },
         // Unishox2 is a C library that uses string.h / stdlib.h (memset,
         // strlen, memcpy), so any compilation that includes this module
@@ -146,6 +154,21 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(server_exe);
+
+    // --- MeshCore serial probe (diagnostic tool) ---
+    const probe_exe = b.addExecutable(.{
+        .name = "meshcore-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/meshcore_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "serial", .module = serial.module("serial") },
+                .{ .name = "bbs", .module = mod },
+            },
+        }),
+    });
+    b.installArtifact(probe_exe);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).

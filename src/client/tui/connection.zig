@@ -22,6 +22,7 @@ const zz = @import("zigzag");
 const types = @import("types.zig");
 const cli = @import("cli.zig");
 const agwpe = types.agwpe;
+const meshcore = types.meshcore;
 const tcp_mod = @import("bbs").tcp;
 const endpoint = @import("bbs").endpoint;
 
@@ -43,6 +44,9 @@ pub const ConnectionManager = struct {
     conn: agwpe.Connection = .{},
     /// TCP direct connection (used when active_kind == .tcp).
     tcp_conn: tcp_mod.Connection = .{},
+    /// MeshCore companion-radio connection over a local serial port
+    /// (used when active_kind == .meshcore).
+    meshcore_conn: meshcore.Connection = .{},
     /// Which transport kind is currently active / should be connected.
     active_kind: ActiveTransport = .agwpe,
     /// True when the AGWPE connection has been initialized and needs cleanup
@@ -51,6 +55,9 @@ pub const ConnectionManager = struct {
     /// True when the TCP connection has been initialized and needs cleanup
     /// before a reconnect.
     tcp_conn_initialized: bool = false,
+    /// True when the MeshCore connection has been initialized and needs
+    /// cleanup before a reconnect.
+    meshcore_conn_initialized: bool = false,
     connecting: bool = false,
     /// True when `--connect` was passed on the CLI. Transport params are
     /// immutable for the session; the settings screen shows them read-only
@@ -70,6 +77,9 @@ pub const ConnectionManager = struct {
     // TCP inputs
     tcp_host_input: zz.TextInput,
     tcp_port_input: zz.TextInput,
+    // MeshCore inputs
+    meshcore_dev_input: zz.TextInput,
+    meshcore_baud_input: zz.TextInput,
     // Shared
     callsign_input: zz.TextInput,
 
@@ -77,6 +87,7 @@ pub const ConnectionManager = struct {
         return switch (self.active_kind) {
             .agwpe => self.conn.isConnected(),
             .tcp => self.tcp_conn.isConnected(),
+            .meshcore => self.meshcore_conn.isConnected(),
         };
     }
 
@@ -85,6 +96,7 @@ pub const ConnectionManager = struct {
         return switch (self.active_kind) {
             .agwpe => self.conn.asTransport(),
             .tcp => self.tcp_conn.asTransport(),
+            .meshcore => self.meshcore_conn.asTransport(),
         };
     }
 
@@ -105,6 +117,11 @@ pub const ConnectionManager = struct {
             .tcp => {
                 if (self.tcp_conn_initialized or self.tcp_conn.core.initialized) {
                     self.tcp_conn.disconnect();
+                }
+            },
+            .meshcore => {
+                if (self.meshcore_conn_initialized or self.meshcore_conn.core.initialized) {
+                    self.meshcore_conn.disconnect();
                 }
             },
         }
@@ -173,6 +190,10 @@ pub fn init(mgr: *ConnectionManager, allocator: std.mem.Allocator, store: *@impo
     mgr.tcp_host_input.placeholder = "Server host IP (e.g. 127.0.0.1)";
     mgr.tcp_port_input = zz.TextInput.init(allocator);
     mgr.tcp_port_input.placeholder = "Server TCP port (e.g. 9000)";
+    mgr.meshcore_dev_input = zz.TextInput.init(allocator);
+    mgr.meshcore_dev_input.placeholder = "Serial device (e.g. /dev/ttyUSB0)";
+    mgr.meshcore_baud_input = zz.TextInput.init(allocator);
+    mgr.meshcore_baud_input.placeholder = "Baud rate (default 115200)";
 
     if (connect_ep) |ep| {
         mgr.active_kind = ep.kind;
@@ -186,6 +207,9 @@ pub fn init(mgr: *ConnectionManager, allocator: std.mem.Allocator, store: *@impo
                 // TCP fields get defaults (not used for this transport).
                 mgr.tcp_host_input.setValue(types.default_host) catch {};
                 mgr.tcp_port_input.setValue(types.default_tcp_server_port) catch {};
+                // MeshCore fields get defaults (not used for this transport).
+                mgr.meshcore_dev_input.setValue("") catch {};
+                mgr.meshcore_baud_input.setValue(types.default_meshcore_baud) catch {};
             },
             .tcp => {
                 mgr.tcp_host_input.setValue(ep.host) catch {};
@@ -194,6 +218,21 @@ pub fn init(mgr: *ConnectionManager, allocator: std.mem.Allocator, store: *@impo
                 mgr.host_input.setValue(types.default_host) catch {};
                 mgr.port_input.setValue(types.default_tcp_port) catch {};
                 mgr.kport_input.setValue(types.default_radio_port) catch {};
+                // MeshCore fields get defaults (not used for this transport).
+                mgr.meshcore_dev_input.setValue("") catch {};
+                mgr.meshcore_baud_input.setValue(types.default_meshcore_baud) catch {};
+            },
+            .meshcore => {
+                var baud_buf: [16]u8 = undefined;
+                mgr.meshcore_dev_input.setValue(ep.host) catch {};
+                mgr.meshcore_baud_input.setValue(std.fmt.bufPrint(&baud_buf, "{d}", .{ep.baud}) catch types.default_meshcore_baud) catch {};
+                // AGWPE fields get defaults (not used for this transport).
+                mgr.host_input.setValue(types.default_host) catch {};
+                mgr.port_input.setValue(types.default_tcp_port) catch {};
+                mgr.kport_input.setValue(types.default_radio_port) catch {};
+                // TCP fields get defaults (not used for this transport).
+                mgr.tcp_host_input.setValue(types.default_host) catch {};
+                mgr.tcp_port_input.setValue(types.default_tcp_server_port) catch {};
             },
         }
     } else {
@@ -205,6 +244,8 @@ pub fn init(mgr: *ConnectionManager, allocator: std.mem.Allocator, store: *@impo
         mgr.kport_input.setValue(types.default_radio_port) catch {};
         mgr.tcp_host_input.setValue(types.default_host) catch {};
         mgr.tcp_port_input.setValue(types.default_tcp_server_port) catch {};
+        mgr.meshcore_dev_input.setValue("") catch {};
+        mgr.meshcore_baud_input.setValue(types.default_meshcore_baud) catch {};
     }
 
     // --- Callsign: CLI > DB > default ---
@@ -229,8 +270,10 @@ pub fn init(mgr: *ConnectionManager, allocator: std.mem.Allocator, store: *@impo
 
     mgr.conn = .{};
     mgr.tcp_conn = .{};
+    mgr.meshcore_conn = .{};
     mgr.agwpe_conn_initialized = false;
     mgr.tcp_conn_initialized = false;
+    mgr.meshcore_conn_initialized = false;
     mgr.connecting = false;
 
     // --- If --connect was passed, persist the URI to the DB immediately ---
@@ -249,11 +292,16 @@ pub fn deinit(mgr: *ConnectionManager) void {
     if (mgr.tcp_conn_initialized or mgr.tcp_conn.core.initialized) {
         mgr.tcp_conn.deinit();
     }
+    if (mgr.meshcore_conn_initialized or mgr.meshcore_conn.core.initialized) {
+        mgr.meshcore_conn.deinit();
+    }
     mgr.host_input.deinit();
     mgr.port_input.deinit();
     mgr.kport_input.deinit();
     mgr.tcp_host_input.deinit();
     mgr.tcp_port_input.deinit();
+    mgr.meshcore_dev_input.deinit();
+    mgr.meshcore_baud_input.deinit();
     mgr.callsign_input.deinit();
 }
 
@@ -289,17 +337,35 @@ pub fn startConnect(ctx: *AppContext) void {
         }
     }
 
-    // Tear down the other transport so only one is active at a time.
+    // Tear down the other transports so only one is active at a time.
     switch (mgr.active_kind) {
         .agwpe => {
             if (mgr.tcp_conn.isConnected()) {
                 mgr.tcp_conn.disconnect();
                 ctx.inbox.transport = null;
             }
+            if (mgr.meshcore_conn.isConnected()) {
+                mgr.meshcore_conn.disconnect();
+                ctx.inbox.transport = null;
+            }
         },
         .tcp => {
             if (mgr.conn.isConnected()) {
                 mgr.conn.disconnect();
+                ctx.inbox.transport = null;
+            }
+            if (mgr.meshcore_conn.isConnected()) {
+                mgr.meshcore_conn.disconnect();
+                ctx.inbox.transport = null;
+            }
+        },
+        .meshcore => {
+            if (mgr.conn.isConnected()) {
+                mgr.conn.disconnect();
+                ctx.inbox.transport = null;
+            }
+            if (mgr.tcp_conn.isConnected()) {
+                mgr.tcp_conn.disconnect();
                 ctx.inbox.transport = null;
             }
         },
@@ -311,6 +377,7 @@ pub fn startConnect(ctx: *AppContext) void {
     switch (mgr.active_kind) {
         .agwpe => startAgwpeConnect(ctx, mgr, callsign, page),
         .tcp => startTcpConnect(ctx, mgr, callsign, page),
+        .meshcore => startMeshcoreConnect(ctx, mgr, callsign, page),
     }
 }
 
@@ -402,6 +469,91 @@ fn startTcpConnect(ctx: *AppContext, mgr: *ConnectionManager, callsign: []const 
     mgr.connecting = true;
     ctx.status = "Connecting (TCP)...";
     _ = ctx.async_runner.spawnWithArg(TcpConnectArgs, args, &tcpConnectTask);
+}
+
+/// Arguments for the background MeshCore connect task.
+pub const MeshcoreConnectArgs = struct {
+    connection: *meshcore.Connection,
+    io: std.Io,
+    /// Serial device path. Page-allocated copy owned by the task.
+    device_path: []const u8,
+    baud: u32,
+    allocator: std.mem.Allocator,
+    callsign: []const u8,
+};
+
+fn startMeshcoreConnect(ctx: *AppContext, mgr: *ConnectionManager, callsign: []const u8, page: std.mem.Allocator) void {
+    const dev_raw = mgr.meshcore_dev_input.value.items;
+    if (dev_raw.len == 0) {
+        ctx.status = "Serial device required — edit in Settings (Ctrl+R).";
+        return;
+    }
+    const baud = std.fmt.parseInt(u32, mgr.meshcore_baud_input.value.items, 10) catch {
+        ctx.status = "Invalid baud rate — edit in Settings (Ctrl+R).";
+        return;
+    };
+
+    if (mgr.meshcore_conn_initialized or mgr.meshcore_conn.core.initialized) {
+        mgr.meshcore_conn.deinit();
+        mgr.meshcore_conn = .{};
+        mgr.meshcore_conn_initialized = false;
+    }
+
+    const callsign_copy = page.dupe(u8, callsign) catch {
+        ctx.status = "Out of memory.";
+        return;
+    };
+    const dev_copy = page.dupe(u8, dev_raw) catch {
+        page.free(callsign_copy);
+        ctx.status = "Out of memory.";
+        return;
+    };
+
+    const args = MeshcoreConnectArgs{
+        .connection = &mgr.meshcore_conn,
+        .io = ctx.io,
+        .device_path = dev_copy,
+        .baud = baud,
+        .allocator = page,
+        .callsign = callsign_copy,
+    };
+
+    mgr.connecting = true;
+    ctx.status = "Connecting (MeshCore)...";
+    _ = ctx.async_runner.spawnWithArg(MeshcoreConnectArgs, args, &meshcoreConnectTask);
+}
+
+/// Background task: open + configure the MeshCore radio's serial port.
+fn meshcoreConnectTask(args: MeshcoreConnectArgs) ?Msg {
+    defer std.heap.page_allocator.free(args.callsign);
+    defer std.heap.page_allocator.free(args.device_path);
+
+    const host = copyHost(args.device_path);
+    const host_len: u8 = @intCast(@min(args.device_path.len, 64));
+
+    args.connection.connect(args.io, args.device_path, args.baud, args.allocator, 0, args.callsign) catch |err| {
+        var err_buf: [64]u8 = std.mem.zeroes([64]u8);
+        const err_name = @errorName(err);
+        const en = @min(err_name.len, 63);
+        @memcpy(err_buf[0..en], err_name[0..en]);
+        return .{ .connect_done = .{
+            .ok = false,
+            .err = err_buf,
+            .err_len = @intCast(en),
+            .kport = 0,
+            .host = host,
+            .host_len = host_len,
+            .port = 0,
+        } };
+    };
+
+    return .{ .connect_done = .{
+        .ok = true,
+        .kport = 0,
+        .host = host,
+        .host_len = host_len,
+        .port = 0,
+    } };
 }
 
 /// Arguments for the background TCP connect task.
@@ -498,6 +650,7 @@ pub fn handleConnectResult(ctx: *AppContext, cr: ConnectResult) void {
         switch (mgr.active_kind) {
             .agwpe => mgr.agwpe_conn_initialized = true,
             .tcp => mgr.tcp_conn_initialized = true,
+            .meshcore => mgr.meshcore_conn_initialized = true,
         }
         ctx.status = "Connected.";
         // Hand the transport handle to the inbox so receive-side logic is
@@ -531,6 +684,10 @@ fn formatConnectUri(mgr: *const ConnectionManager, allocator: std.mem.Allocator)
             mgr.tcp_host_input.value.items,
             mgr.tcp_port_input.value.items,
         }),
+        .meshcore => std.fmt.allocPrint(allocator, "meshcore://{s}:{s}", .{
+            mgr.meshcore_dev_input.value.items,
+            mgr.meshcore_baud_input.value.items,
+        }),
     };
 }
 
@@ -553,10 +710,20 @@ fn saveTransportConfig(ctx: *AppContext) void {
 /// Save the connect URI from a CLI-provided endpoint to the DB so it persists
 /// for the next session. Called during init when --connect is used.
 fn saveConnectUri(store: *@import("../client_store.zig").Store, ep: endpoint.TransportEndpoint) void {
+    // MeshCore URIs carry a device path + baud, not host:port.
+    if (ep.kind == .meshcore) {
+        const uri = std.fmt.allocPrint(store.allocator, "meshcore://{s}:{d}", .{
+            ep.host, ep.baud,
+        }) catch return;
+        defer store.allocator.free(uri);
+        store.setConnectUri(uri) catch {};
+        return;
+    }
     const uri = std.fmt.allocPrint(store.allocator, "{s}://{s}:{d}", .{
         switch (ep.kind) {
             .agwpe => "agwpe",
             .tcp => "tcp",
+            .meshcore => unreachable,
         },
         ep.host,
         ep.port,

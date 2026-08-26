@@ -16,7 +16,7 @@ conversation in data modes.
 - **Pluggable transports** - Implement the `Transport` vtable to add a new link layer.
   - **AGWPE** - (TCP protocol spoken by ham-radio TNCs such as Direwolf.
   - **TCP** - Direct client/server links without a TNC.
-  - **MeshCore** - Soon (TM)
+  - **MeshCore** - Base firmware 1.7+ not using TNC
 - **Client side Cache** - Client caches bulletins and other user information locally to minimize network time.
 - **Interactive TUI client**
 

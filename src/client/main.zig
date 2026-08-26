@@ -40,9 +40,12 @@ const usage =
     \\
     \\Options:
     \\  --connect <url>     Transport endpoint (single use).
-    \\                      agwpe://host:port[:kport] — AGWPE TNC (radio)
-    \\                      tcp://host:port           — direct TCP
-    \\                      host:port[:kport]          — bare (defaults to AGWPE)
+    \\                      agwpe://host:port[:kport]   — AGWPE TNC (radio)
+    \\                      tcp://host:port             — direct TCP
+    \\                      meshcore://<device>[:baud]  — MeshCore radio on a
+    \\                                                    serial port (/dev/ttyUSB0,
+    \\                                                    COM6 on Windows)
+    \\                      host:port[:kport]           — bare (defaults to AGWPE)
     \\  --callsign <str>    Source callsign for AX.25 header (default: NOCALL)
     \\  --handle <str>      Handle for registration (salts the KDF with --key)
     \\  --key <passphrase>  Derive Ed25519 signing key from passphrase (HKDF-SHA256)

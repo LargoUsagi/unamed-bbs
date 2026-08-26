@@ -29,6 +29,7 @@ pub fn renderConnIndicator(
     const kind_name = switch (kind) {
         .agwpe => "AGWPE",
         .tcp => "TCP",
+        .meshcore => "MeshCore",
     };
     const label = if (connected)
         try std.fmt.allocPrint(alloc, "\xe2\x97\x8f Connected ({s})", .{kind_name})

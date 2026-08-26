@@ -1,7 +1,9 @@
 //! Bulletin server executable.
 //!
-//! Connects to one or more AGWPE TNCs (e.g. Direwolf) via `--connect` and/or
-//! listens for direct TCP client connections via `--listen`. Broadcasts
+//! Connects to one or more outbound transports via `--connect` — AGWPE TNCs
+//! (e.g. Direwolf), direct TCP endpoints, or MeshCore companion radios on
+//! local serial ports — and/or listens for inbound TCP client connections
+//! via `--listen`. Broadcasts
 //! (chat, bulletins, MOTD, user info) are sent to ALL connected transports
 //! so every listener can cache them. Directed responses
 //! (registration acks, request_status, chat rejects) and NAK retransmits go
@@ -29,6 +31,7 @@ const Io = std.Io;
 const kiss = @import("bbs");
 const agwpe = kiss.agwpe;
 const tcp_mod = kiss.tcp;
+const meshcore = kiss.meshcore;
 const signing = kiss.signing;
 const bulletin_store = @import("bulletin_store.zig");
 const cli = @import("cli.zig");
@@ -178,6 +181,10 @@ pub fn main(init: std.process.Init) !void {
     const num_connects = @min(o.connects.items.len, max_transports);
     var connect_addresses: [max_transports]Io.net.IpAddress = undefined;
     for (o.connects.items[0..num_connects], 0..) |spec, i| {
+        if (spec.kind == .meshcore) {
+            try stderr.print("connect {d}: meshcore://{s} baud={d}\n", .{ i, spec.host, spec.baud });
+            continue;
+        }
         const host_str = if (std.mem.eql(u8, spec.host, "localhost")) "127.0.0.1" else spec.host;
         connect_addresses[i] = Io.net.IpAddress.parse(host_str, spec.port) catch |err| {
             try stderr.print("error: invalid host '{s}': {s}\n", .{ spec.host, @errorName(err) });
@@ -228,6 +235,9 @@ pub fn main(init: std.process.Init) !void {
     for (&tcp_conns) |*c| c.* = .{};
     // Track which tcp_conns slots are in use (for accept reuse).
     var tcp_slots_used: [max_transports]bool = .{false} ** max_transports;
+    // MeshCore companion radios on local serial ports.
+    var meshcore_conns: [max_transports]meshcore.Connection = undefined;
+    for (&meshcore_conns) |*c| c.* = .{};
 
     var pool: TransportPool = .{};
 
@@ -262,6 +272,18 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // Pre-add outbound MeshCore transports to the pool (disconnected; pool
+    // skips them until the serial port opens).
+    for (o.connects.items[0..num_connects], 0..) |spec, i| {
+        if (spec.kind == .meshcore) {
+            const name = std.fmt.allocPrint(arena, "meshcore:{s}", .{spec.host}) catch "meshcore";
+            const free_id = pool.findFreeSlot() orelse break;
+            _ = pool.addAt(free_id, transports.wrapMeshcore(
+                free_id, i, name, &meshcore_conns[i], io, 0,
+            ));
+        }
+    }
+
     // --- TCP listener accept threads ---
     var pending_accepts = PendingAcceptQueue.init(arena);
     var stop_flag = std.atomic.Value(bool).init(false);
@@ -282,6 +304,8 @@ pub fn main(init: std.process.Init) !void {
     var last_reconnect: [max_transports]u64 = .{0} ** max_transports;
     // Per-TCP-connect reconnection timestamps.
     var last_tcp_reconnect: [max_transports]u64 = .{0} ** max_transports;
+    // Per-MeshCore-transport reconnection timestamps.
+    var last_meshcore_reconnect: [max_transports]u64 = .{0} ** max_transports;
 
     // Mutable MOTD — sysop can update it at runtime via a `motd` message.
     var current_motd: []const u8 = initial_motd;
@@ -327,6 +351,12 @@ pub fn main(init: std.process.Init) !void {
             };
             try stderr.print("connect {d}: connected\n", .{i});
             try stderr.flush();
+            // Beacon immediately on link-up: announces presence on the
+            // fresh radio link and gives listeners an instant bulletin
+            // cache warm-start (instead of waiting for a window).
+            if (poolIdForKindSlot(&pool, .agwpe, i)) |pid| {
+                beaconNow(&base_ctx, pid, io);
+            }
         }
 
         // --- Connect / reconnect outbound TCP transports ---
@@ -349,6 +379,29 @@ pub fn main(init: std.process.Init) !void {
             };
             try stderr.print("connect: tcp connected\n", .{});
             try stderr.flush();
+        }
+
+        // --- Connect / reconnect outbound MeshCore transports ---
+        for (o.connects.items[0..num_connects], 0..) |spec, i| {
+            if (spec.kind != .meshcore) continue;
+            if (meshcore_conns[i].isConnected()) continue;
+
+            const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+            if (now - last_meshcore_reconnect[i] < retry_delay_sec) continue;
+            last_meshcore_reconnect[i] = now;
+
+            try stderr.print("connect {d}: opening meshcore serial port {s} at {d} baud...\n", .{ i, spec.host, spec.baud });
+            try stderr.flush();
+            meshcore_conns[i].connect(io, spec.host, spec.baud, arena, 0, o.callsign) catch |err| {
+                try stderr.print("connect {d}: failed: {s} — retry in {d}s\n", .{ i, @errorName(err), retry_delay_sec });
+                try stderr.flush();
+                continue;
+            };
+            try stderr.print("connect {d}: connected\n", .{i});
+            if (meshcore_conns[i].identityTag() == null) {
+                try stderr.print("connect {d}: warning: radio did not report its identity (SELF_INFO) — transmissions will fail until it does\n", .{i});
+                try stderr.flush();
+            }
         }
 
         // --- Drain pending TCP accepts ---
@@ -443,6 +496,28 @@ pub fn main(init: std.process.Init) !void {
         }
 
         std.Io.sleep(io, .fromMilliseconds(100), .real) catch {};
+    }
+}
+
+/// Find the pool id of a static outbound transport by its kind and
+/// connection-array index.
+fn poolIdForKindSlot(pool: *TransportPool, kind: transports.TransportKind, slot_idx: usize) ?TransportId {
+    var id: TransportId = 0;
+    while (id < pool.count) : (id += 1) {
+        if (pool.transports[id]) |t| {
+            if (t.kind == kind and t.slot_idx == slot_idx) return id;
+        }
+    }
+    return null;
+}
+
+/// Send one heartbeat beacon to a single transport right now, and stamp its
+/// tx clock so the window loop doesn't immediately re-beacon. Used on
+/// link-up; failures are ignored (the window loop retries later).
+fn beaconNow(ctx: *const ServerCtx, id: TransportId, io: Io) void {
+    outbox.sendHeartbeat(ctx, Route.onTransport(id)) catch {};
+    if (ctx.pool.get(id)) |t| {
+        t.last_tx_sec = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
     }
 }
 

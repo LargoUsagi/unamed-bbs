@@ -1,9 +1,9 @@
 //! CLI argument parsing for the bulletin server.
 //!
 //! Supports multiple outbound transports via repeated `--connect` flags with
-//! a protocol prefix (`agwpe://host:port[:kport]` or `tcp://host:port`).
-//! A single `--host`/`--port` pair is accepted as backward-compatible
-//! shorthand for one AGWPE transport.
+//! a protocol prefix (`agwpe://host:port[:kport]`, `tcp://host:port`, or
+//! `meshcore:///dev/ttyUSB0[:baud]`). A single `--host`/`--port` pair is
+//! accepted as backward-compatible shorthand for one AGWPE transport.
 //!
 //! `--listen` flags create inbound TCP listeners (`tcp://host:port`) that
 //! accept direct client connections without a TNC.
@@ -20,9 +20,12 @@ pub const default_store_path = "bulletins.kblt";
 /// One transport endpoint — either outbound (connect) or inbound (listen).
 pub const TransportSpec = struct {
     kind: endpoint.TransportKind,
+    /// Network kinds: hostname/IP. Meshcore: serial device path.
     host: []const u8,
     port: u16,
     kport: u4,
+    /// Serial baud rate (meshcore only; ignored by network kinds).
+    baud: u32 = endpoint.meshcore_default_baud,
 };
 
 pub const Options = struct {
@@ -56,9 +59,12 @@ pub const usage =
     \\
     \\Options:
     \\  --connect <url>    Outbound transport endpoint (repeatable).
-    \\                     agwpe://host:port[:kport] — AGWPE TNC (default)
-    \\                     tcp://host:port           — direct TCP
-    \\                     host:port[:kport]          — bare (AGWPE)
+    \\                     agwpe://host:port[:kport]   — AGWPE TNC (default)
+    \\                     tcp://host:port             — direct TCP
+    \\                     meshcore://<device>[:baud]  — MeshCore radio on a
+    \\                                                   serial port (/dev/ttyUSB0,
+    \\                                                   COM6 on Windows)
+    \\                     host:port[:kport]           — bare (AGWPE)
     \\  --listen <url>     Inbound TCP listener (repeatable).
     \\                     tcp://host:port
     \\  --host <addr>      Single AGWPE transport: host (shorthand)
@@ -86,7 +92,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const [:0]const u8) !ParsedOp
             i += 1;
             if (i >= args.len) return error.MissingValueForConnect;
             const ep = endpoint.parseEndpoint(args[i]) catch return error.InvalidConnect;
-            opts.connects.append(arena, .{ .kind = ep.kind, .host = ep.host, .port = ep.port, .kport = ep.kport }) catch return error.OutOfMemory;
+            opts.connects.append(arena, .{ .kind = ep.kind, .host = ep.host, .port = ep.port, .kport = ep.kport, .baud = ep.baud }) catch return error.OutOfMemory;
         } else if (std.mem.eql(u8, a, "--listen")) {
             i += 1;
             if (i >= args.len) return error.MissingValueForListen;

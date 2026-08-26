@@ -1,11 +1,12 @@
 //! Settings screen — tabbed modal for transport configuration, signing key
 //! info, and diagnostic panels (incoming messages and sent transmissions).
 //!
-//! Two tabs switch between the AGWPE (radio/TNC) transport and the direct
-//! TCP transport. The callsign field is shared. When the transport is locked
-//! from CLI (`--connect`), the tab switcher is hidden, only the locked
-//! transport's fields are shown, and the text inputs are read-only (immutable
-//! for the session).
+//! Three tabs switch between the AGWPE (radio/TNC) transport, the direct
+//! TCP transport, and the MeshCore (serial companion radio) transport. The
+//! callsign field is shared. When the transport is locked from CLI
+//! (`--connect`), the tab switcher is hidden, only the locked transport's
+//! fields are shown, and the text inputs are read-only (immutable for the
+//! session).
 
 const std = @import("std");
 const zz = @import("zigzag");
@@ -17,7 +18,7 @@ const app = @import("../app.zig");
 const connection_mod = @import("../connection.zig");
 
 /// Which settings tab is active.
-const Tab = enum { agwpe, tcp };
+const Tab = enum { agwpe, tcp, meshcore };
 
 pub const State = struct {
     ctx: *app.AppContext = undefined,
@@ -27,6 +28,9 @@ pub const State = struct {
     /// the AGWPE form's type so both can be returned from currentForm()
     /// without a ptrCast.
     tcp_form: zz.Form(6) = undefined,
+    /// MeshCore form (device, baud, reconnect, disconnect). Same Form(6)
+    /// shape as the other two.
+    meshcore_form: zz.Form(6) = undefined,
     reconnect_button: Button = .{ .label = "Reconnect" },
     disconnect_button: Button = .{ .label = "Disconnect" },
     /// Which tab is currently shown.
@@ -66,6 +70,18 @@ pub fn init(ctx: *app.AppContext) void {
     _ = state.tcp_form.focus_group.addNextKey(.{ .key = .down });
     _ = state.tcp_form.focus_group.addPrevKey(.{ .key = .up });
     state.tcp_form.hint_text = "";
+
+    state.meshcore_form = zz.Form(6).init();
+    state.meshcore_form.title = "MeshCore Radio Settings";
+    state.meshcore_form.addField("Device", &ctx.connection.meshcore_dev_input, .{ .required = true });
+    state.meshcore_form.addField("Baud", &ctx.connection.meshcore_baud_input, .{ .required = true });
+    state.meshcore_form.addField("", &state.reconnect_button, .{ .required = false });
+    state.meshcore_form.addField("", &state.disconnect_button, .{ .required = false });
+    state.meshcore_form.submit_keys = &.{};
+    state.meshcore_form.cancel_keys = &.{};
+    _ = state.meshcore_form.focus_group.addNextKey(.{ .key = .down });
+    _ = state.meshcore_form.focus_group.addPrevKey(.{ .key = .up });
+    state.meshcore_form.hint_text = "";
 }
 
 pub fn deinit() void {}
@@ -77,6 +93,7 @@ fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
     state.active_tab = switch (mgr.active_kind) {
         .agwpe => .agwpe,
         .tcp => .tcp,
+        .meshcore => .meshcore,
     };
     state.tab_focused = !mgr.connect_locked;
     if (!mgr.connect_locked) {
@@ -129,6 +146,7 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     const form_view = switch (state.active_tab) {
         .agwpe => try state.agwpe_form.view(alloc),
         .tcp => try state.tcp_form.view(alloc),
+        .meshcore => try state.meshcore_form.view(alloc),
     };
     defer alloc.free(form_view);
 
@@ -194,7 +212,23 @@ fn currentForm() *zz.Form(6) {
     return switch (state.active_tab) {
         .agwpe => &state.agwpe_form,
         .tcp => &state.tcp_form,
+        .meshcore => &state.meshcore_form,
     };
+}
+
+/// Cycle to the next tab (Left/Right wrap across all three transports).
+fn nextTab(current: Tab, forward: bool) Tab {
+    const order = [_]Tab{ .agwpe, .tcp, .meshcore };
+    for (order, 0..) |t, i| {
+        if (t == current) {
+            const n = if (forward)
+                (i + 1) % order.len
+            else
+                (i + order.len - 1) % order.len;
+            return order[n];
+        }
+    }
+    return current;
 }
 
 /// Returns true if the key event would mutate a text input's value (char,
@@ -231,6 +265,7 @@ fn handleFormKey(ctx: *app.AppContext, k: zz.KeyEvent) zz.ScreenAction {
     if (ctx.connection.connect_locked) {
         // AGWPE: field 0 = callsign, fields 1-3 = host/port/kport.
         // TCP: fields 0-1 = host/port (no callsign field).
+        // MeshCore: fields 0-1 = device/baud (no callsign field).
         if (state.active_tab == .agwpe) {
             // Callsign (field 0): locked only when callsign_locked.
             if (form.focus_group.active == 0 and !ctx.connection.callsign_locked and isTextMutatingKey(k)) {
@@ -239,7 +274,7 @@ fn handleFormKey(ctx: *app.AppContext, k: zz.KeyEvent) zz.ScreenAction {
                 return .none;
             }
         } else {
-            // TCP: fields 0-1 are transport inputs (host, port).
+            // TCP / MeshCore: fields 0-1 are transport inputs.
             if (form.focus_group.active < 2 and isTextMutatingKey(k)) {
                 return .none;
             }
@@ -274,10 +309,11 @@ fn handleFormKey(ctx: *app.AppContext, k: zz.KeyEvent) zz.ScreenAction {
 /// form. Returns `.none` for any other key (the tab strip eats it).
 fn handleTabStripKey(mgr: *app.ConnectionManager, k: zz.KeyEvent) zz.ScreenAction {
     if (k.key == .left or k.key == .right) {
-        state.active_tab = if (state.active_tab == .agwpe) .tcp else .agwpe;
+        state.active_tab = nextTab(state.active_tab, k.key == .right);
         mgr.active_kind = switch (state.active_tab) {
             .agwpe => .agwpe,
             .tcp => .tcp,
+            .meshcore => .meshcore,
         };
         return .none;
     }
@@ -308,6 +344,12 @@ fn renderTabStrip(alloc: std.mem.Allocator, mgr: *app.ConnectionManager) anyerro
             " [TCP (Direct)] "
         else
             "  TCP (Direct)  ";
+        const meshcore_label = if (state.active_tab == .meshcore and state.tab_focused)
+            " [MeshCore (Serial)]▶"
+        else if (state.active_tab == .meshcore)
+            " [MeshCore (Serial)] "
+        else
+            "  MeshCore (Serial)  ";
 
         var tab_style = zz.Style{};
         tab_style = tab_style.inline_style(true);
@@ -321,10 +363,17 @@ fn renderTabStrip(alloc: std.mem.Allocator, mgr: *app.ConnectionManager) anyerro
         else
             tab_style.fg(zz.Color.gray(12)).render(alloc, tcp_label) catch try alloc.dupe(u8, tcp_label);
         defer alloc.free(tcp_styled);
+        const meshcore_styled = if (state.active_tab == .meshcore)
+            tab_style.fg(zz.Color.cyan).bold(true).render(alloc, meshcore_label) catch try alloc.dupe(u8, meshcore_label)
+        else
+            tab_style.fg(zz.Color.gray(12)).render(alloc, meshcore_label) catch try alloc.dupe(u8, meshcore_label);
+        defer alloc.free(meshcore_styled);
 
         try tab_buf.appendSlice(alloc, agwpe_styled);
         try tab_buf.appendSlice(alloc, "  ");
         try tab_buf.appendSlice(alloc, tcp_styled);
+        try tab_buf.appendSlice(alloc, "  ");
+        try tab_buf.appendSlice(alloc, meshcore_styled);
     } else {
         var lock_style = zz.Style{};
         lock_style = lock_style.inline_style(true);
@@ -332,6 +381,7 @@ fn renderTabStrip(alloc: std.mem.Allocator, mgr: *app.ConnectionManager) anyerro
         const locked_label = switch (mgr.active_kind) {
             .agwpe => "Transport: AGWPE (locked from CLI \xe2\x80\x94 immutable)",
             .tcp => "Transport: TCP (locked from CLI \xe2\x80\x94 immutable)",
+            .meshcore => "Transport: MeshCore (locked from CLI \xe2\x80\x94 immutable)",
         };
         const styled = lock_style.render(alloc, locked_label) catch try alloc.dupe(u8, locked_label);
         defer alloc.free(styled);

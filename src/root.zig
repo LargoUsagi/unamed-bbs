@@ -10,14 +10,17 @@
 //!   * `transport.frame` / `transport.incoming` — packetization wire format
 //!   * `transport.transport` — link-agnostic `Transport` vtable + splitting
 //!   * `transport.messaging` — sessions: sign, fan-out, reassembly
-//!   * `transport.link.agwpe` / `transport.link.tcp` — concrete link impls
+//!   * `transport.link.agwpe` / `transport.link.tcp` / `transport.link.meshcore`
+//!     — concrete link implementations
 
 const std = @import("std");
 const Io = std.Io;
 
 pub const agwpe = @import("transport/link/agwpe.zig");
 pub const tcp = @import("transport/link/tcp.zig");
+pub const meshcore = @import("transport/link/meshcore.zig");
 pub const transport = @import("transport/transport.zig");
+pub const connection = @import("transport/connection.zig");
 pub const endpoint = @import("transport/endpoint.zig");
 pub const reassembly = @import("transport/reassembly.zig");
 pub const messaging = @import("transport/messaging.zig");
@@ -35,6 +38,7 @@ pub const avatar = @import("avatar.zig");
 test {
     _ = @import("transport/link/agwpe.zig");
     _ = @import("transport/link/tcp.zig");
+    _ = @import("transport/link/meshcore.zig");
     _ = @import("transport/transport.zig");
     _ = @import("transport/frame.zig");
     _ = @import("transport/incoming.zig");

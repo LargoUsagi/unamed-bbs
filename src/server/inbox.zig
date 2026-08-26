@@ -88,9 +88,13 @@ pub const Inbox = struct {
     /// `ServerCtx` (with the correct `source_transport_id`) is passed through
     /// to handlers. Takes a mutable pointer only so it can be handed to the
     /// type-erased `RxHandler.ctx`.
+    ///
+    /// Callsigns are optional at the session boundary: only AGWPE provides
+    /// link-layer identity (the AX.25 header). Identity-less links (MeshCore
+    /// RAW packets) deliver messages with an empty callsign slice; handlers
+    /// that need an asserted identity (registration) enforce that themselves.
     fn process(self: *Inbox, ctx: *ServerCtx, im: *const kiss.transport.IncomingMessage) void {
         if (!im.is_message_frame) return;
-        if (!im.has_callsign) return;
 
         const handler = messaging.RxHandler{
             .ctx = @ptrCast(ctx),

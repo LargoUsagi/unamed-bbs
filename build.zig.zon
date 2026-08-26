@@ -40,6 +40,10 @@
             .url = "git+https://github.com/vrischmann/zig-sqlite#946d77c526258760b52836187af32d1a192c5d36",
             .hash = "sqlite-3.48.0-F2R_azCQDgBGaWDIX4g2vxKpuqzYEQOOfAeJGMNocPu0",
         },
+        .serial = .{
+            .url = "https://github.com/ZigEmbeddedGroup/serial/archive/refs/heads/master.tar.gz",
+            .hash = "serial-0.0.1-PoeRzD66AACCQUHzsIssi6bOcEtnQFPebT6WLvno0I_p",
+        },
     },
     .paths = .{
         "build.zig",

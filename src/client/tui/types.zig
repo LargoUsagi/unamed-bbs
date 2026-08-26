@@ -11,6 +11,7 @@ const std = @import("std");
 const zz = @import("zigzag");
 
 pub const agwpe = @import("bbs").agwpe;
+pub const meshcore = @import("bbs").meshcore;
 pub const signing = @import("bbs").signing;
 pub const message_frame = @import("bbs").message_frame;
 pub const transport = @import("bbs").transport;
@@ -25,6 +26,9 @@ pub const default_tcp_port = "8000";
 pub const default_radio_port = "0";
 pub const default_tcp_server_port = "9000";
 pub const default_callsign = "NOCALL";
+/// Default serial baud for a MeshCore companion radio (matches
+/// `endpoint.meshcore_default_baud`, kept as string for the TUI input).
+pub const default_meshcore_baud = "115200";
 
 /// Maximum input message length in characters (before compression).
 /// Alias for `message_frame.max_body_len`.

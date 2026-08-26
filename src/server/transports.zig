@@ -28,6 +28,7 @@ const Io = std.Io;
 const transport_mod = @import("bbs").transport;
 const agwpe = @import("bbs").agwpe;
 const tcp_mod = @import("bbs").tcp;
+const meshcore_mod = @import("bbs").meshcore;
 const message_frame = @import("bbs").message_frame;
 const messaging = @import("bbs").messaging;
 
@@ -52,6 +53,8 @@ pub const TransportKind = enum {
     tcp_connect,
     /// Inbound TCP connection (accepted from a `--listen` socket).
     tcp_listen,
+    /// Outbound MeshCore companion radio on a local serial port.
+    meshcore,
 };
 
 fn nowSec(io: Io) u64 {
@@ -377,6 +380,31 @@ pub fn wrapTcp(
     return .{
         .id = id,
         .kind = kind,
+        .slot_idx = slot_idx,
+        .name = name,
+        .port = port,
+        .transport = conn.asTransport(),
+        .cache = .{ .io = io },
+        .last_tx_sec = nowSec(io),
+    };
+}
+
+/// Create a `ServerTransport` wrapping a `meshcore.Connection` (companion
+/// radio on a local serial port). The caller retains ownership of the
+/// connection; the transport borrows it via `conn.asTransport()`. `port`
+/// is the radio channel (always 0 for MeshCore — packets are zero-hop
+/// direct transmissions heard by every station in range).
+pub fn wrapMeshcore(
+    id: TransportId,
+    slot_idx: usize,
+    name: []const u8,
+    conn: *meshcore_mod.Connection,
+    io: Io,
+    port: u4,
+) ServerTransport {
+    return .{
+        .id = id,
+        .kind = .meshcore,
         .slot_idx = slot_idx,
         .name = name,
         .port = port,

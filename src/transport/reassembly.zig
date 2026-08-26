@@ -75,8 +75,15 @@ pub const Reassembler = struct {
     /// the entry, and returns the reassembled message. Returns null when
     /// more packets are still needed (or on error/overflow).
     pub fn feed(self: *Reassembler, im: IncomingMessage, now_ms: u64) ?ReassembledMsg {
-        if (!im.has_callsign) return null;
-        const callsign = im.callsign[0..@min(im.callsign_str_len, callsign_len)];
+        // Callsigns are optional (only AGWPE provides link-layer identity);
+        // an empty slice keys the entry like any other. Identity-less links
+        // rely on group_id alone, so two stations concurrently sending
+        // multipart with the same group id can collide — a known limit of
+        // identity-less media.
+        const callsign = if (im.has_callsign)
+            im.callsign[0..@min(im.callsign_str_len, callsign_len)]
+        else
+            im.callsign[0..0];
 
         const entry = self.findOrCreate(callsign, im.group_id) orelse return null;
 
@@ -383,4 +390,40 @@ test "Reassembler concatenates mixed-size chunks (MTU-agnostic)" {
     for (msg.payload[0..c0.len]) |b| try testing.expectEqual(@as(u8, 'A'), b);
     try testing.expectEqualSlices(u8, c1, msg.payload[c0.len..]);
     try testing.expectEqual(sig, msg.signature.?);
+}
+
+test "Reassembler: callsign-less packets (identity-less links) reassemble" {
+    var reassembler: Reassembler = .{};
+
+    const c0 = "identity-less chunk one ";
+    const c1 = "chunk two";
+    var sig: [signature_len]u8 = undefined;
+    @memset(&sig, 0xAB);
+
+    for ([_]u8{ 0, 1 }) |pn| {
+        var im: IncomingMessage = .{};
+        im.is_message_frame = true;
+        im.msg_type = .bulletin;
+        im.has_callsign = false; // MeshCore RAW packets carry no identity
+        im.group_id = 4;
+        im.packet_number = pn;
+        im.packet_count = 2;
+        const chunk = if (pn == 0) c0 else c1;
+        @memcpy(im.frame_payload[0..chunk.len], chunk);
+        im.frame_payload_len = @intCast(chunk.len);
+        if (pn == 0) {
+            im.signed = true;
+            im.signature = sig;
+        }
+
+        if (pn == 0) {
+            try testing.expect(reassembler.feed(im, 1000) == null);
+        } else {
+            const msg = reassembler.feed(im, 1001) orelse return error.TestUnexpectedResult;
+            // The reassembler allocates payloads from the page allocator.
+            defer std.heap.page_allocator.free(msg.payload);
+            try testing.expectEqual(@as(usize, 0), msg.callsign_len);
+            try testing.expectEqualSlices(u8, c0 ++ c1, msg.payload);
+        }
+    }
 }
