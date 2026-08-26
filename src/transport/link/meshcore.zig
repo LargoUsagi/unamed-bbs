@@ -33,13 +33,13 @@
 //! directed callsigns already ride inside signed payloads, so no contact
 //! sync or direct-path management is needed in this cut.
 //!
-//! Chunk budget (why `mtu_payload` is 98): stock companion firmware caps
+//! Chunk budget (why `mtu_payload` is 97): stock companion firmware caps
 //! every serial command frame at MAX_FRAME_SIZE (176), so
 //!
 //!   176 − cmd(1) − priority(1)                    = 174 raw packet bytes
 //!   174 − meshcore header(1) − path_len(1)        = 172 MessageFrame bytes
-//!   172 − identity tag(4)                         = 168 MessageFrame bytes
-//!   168 − MessageFrame header(6) − signature(64)  =  98 chunk bytes
+//!   172 − identity tag(4) − tx sequence(1)        = 167 MessageFrame bytes
+//!   167 − MessageFrame header(6) − signature(64)  =  97 chunk bytes
 //!
 //! Continuation packets could carry more (no signature field), but
 //! `sendMultipart` splits uniformly. Receivers accept chunks up to
@@ -64,8 +64,9 @@ const decodePacket = incoming_mod.decodePacket;
 /// Operational payload bytes per packet chunk for this transport. See the
 /// module doc comment for the full derivation against the companion
 /// firmware's 176-byte serial frame cap — including the 4-byte sender
-/// identity tag that rides inside every radio payload.
-pub const mtu_payload: usize = 98;
+/// identity tag and the 1-byte transmit sequence number that ride inside
+/// every radio payload.
+pub const mtu_payload: usize = 97;
 
 /// Default baud rate — MeshCore companion firmware standard (115200 8N1).
 pub const default_baud: u32 = 115200;
@@ -84,9 +85,24 @@ pub const identity_tag_len: usize = 4;
 /// Length of the hex-rendered identity callsign.
 pub const identity_callsign_len: usize = 2 * identity_tag_len;
 
+/// Transmit sequence number: one byte that walks through all 256 values
+/// across consecutive transmissions on this link. Companion firmware dedups
+/// received packets by SHA256(payload-type ‖ payload), so byte-identical
+/// messages (static request payloads + deterministic Ed25519 signatures)
+/// would otherwise be silently dropped as duplicates until the radio's
+/// seen-table evicts them. The sequence byte rides inside the hashed
+/// region, giving every transmission — even a byte-identical one — a fresh
+/// on-air identity. It is stripped on receive and carries no meaning above
+/// the link; the cycle length (256) far exceeds the seen-table depth.
+pub const tx_seq_len: usize = 1;
+
 /// `RESP_CODE_SELF_INFO` — reply to APP_START; carries the radio's public key.
 const RESP_CODE_SELF_INFO: u8 = 0x05;
 const self_info_min_len: usize = 1 + 3 + 32; // type + adv/tx/max + pubkey
+
+/// Total per-packet link overhead inside the radio payload (after the
+/// MeshCore header/path): identity tag + transmit sequence.
+const radio_overhead_len: usize = identity_tag_len + tx_seq_len;
 
 /// Render a raw identity tag as uppercase hex callsign characters.
 fn identityHex(buf: *[identity_callsign_len]u8, tag: [identity_tag_len]u8) []const u8 {
@@ -141,11 +157,11 @@ pub const raw_custom_direct_header: u8 = 0b00_1111_10;
 const default_tx_priority: u8 = 0;
 
 /// Largest command payload this link ever builds: cmd(1) + priority(1) +
-/// meshcore header(1) + path_len(1) + identity_tag(4) + a fully-signed
-/// packet-0 MessageFrame (header 6 + signature 64 + chunk mtu_payload).
-/// Asserted ≤ the firmware's serial frame cap at compile time below.
+/// meshcore header(1) + path_len(1) + identity_tag(4) + tx_seq(1) + a
+/// fully-signed packet-0 MessageFrame (header 6 + signature 64 + chunk
+/// mtu_payload). Asserted ≤ the firmware's serial frame cap at compile time.
 pub const max_command_payload: usize =
-    4 + identity_tag_len + 6 + transport.frame.signature_len + mtu_payload;
+    4 + radio_overhead_len + 6 + transport.frame.signature_len + mtu_payload;
 
 comptime {
     if (max_command_payload > max_serial_frame_size) {
@@ -158,11 +174,16 @@ comptime {
 // ---------------------------------------------------------------------------
 
 /// Write `'<' + len16 LE + [CMD_SEND_RAW_PACKET][priority]
-/// + [raw_custom_direct_header][path_len=0] + identity_tag + wire` into
-/// `buf`. Returns the total byte count, or null when `wire` would overflow
-/// the firmware's serial frame cap.
-pub fn writeTxCommand(buf: []u8, tag: [identity_tag_len]u8, wire: []const u8) ?usize {
-    const payload_len = 4 + identity_tag_len + wire.len;
+/// + [raw_custom_direct_header][path_len=0] + identity_tag + tx_seq + wire`
+/// into `buf`. Returns the total byte count, or null when `wire` would
+/// overflow the firmware's serial frame cap.
+pub fn writeTxCommand(
+    buf: []u8,
+    tag: [identity_tag_len]u8,
+    seq: u8,
+    wire: []const u8,
+) ?usize {
+    const payload_len = 4 + radio_overhead_len + wire.len;
     if (payload_len > max_serial_frame_size) return null;
     const total = 3 + payload_len;
     if (buf.len < total) return null;
@@ -173,8 +194,12 @@ pub fn writeTxCommand(buf: []u8, tag: [identity_tag_len]u8, wire: []const u8) ?u
     buf[4] = default_tx_priority;
     buf[5] = raw_custom_direct_header;
     buf[6] = 0x00; // path_length: zero hops (heard by every station in range)
-    @memcpy(buf[7..][0..identity_tag_len], &tag);
-    @memcpy(buf[7 + identity_tag_len .. total], wire);
+    buf[7] = tag[0];
+    buf[8] = tag[1];
+    buf[9] = tag[2];
+    buf[10] = tag[3];
+    buf[11] = seq;
+    @memcpy(buf[12..total], wire);
     return total;
 }
 
@@ -271,6 +296,15 @@ pub const Connection = struct {
     pubkey_mutex: Io.Mutex = .init,
     radio_pubkey: [32]u8 = std.mem.zeroes([32]u8),
     have_pubkey: bool = false,
+    /// Walks through all 256 values across transmissions; perturbs the radio
+    /// payload so byte-identical messages defeat content dedup. Reader and
+    /// writer threads both touch it — atomic.
+    tx_seq: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
+
+    /// Next transmit sequence value.
+    fn nextTxSeq(self: *Connection) u8 {
+        return self.tx_seq.fetchAdd(1, .monotonic);
+    }
 
     /// Snapshot of this station's identity tag (first bytes of the radio
     /// public key), or null before SELF_INFO has arrived.
@@ -408,11 +442,13 @@ fn onFrame(conn: *Connection, frame: []const u8) void {
     }
     if (frame[0] != PUSH_CODE_RAW_DATA) return;
 
-    // Raw push body: [snr][rssi][reserved][identity_tag][frame…]. The tag
-    // (first bytes of the sender's radio public key) renders as the
-    // session-layer callsign; the rest is our MessageFrame wire bytes.
+    // Raw push body: [snr][rssi][reserved][identity_tag][tx_seq][frame…].
+    // The tag (first bytes of the sender's radio public key) renders as the
+    // session-layer callsign; the sequence byte is link-local padding that
+    // defeats content dedup and is discarded here; the rest is our
+    // MessageFrame wire bytes.
     const body = frame[4..];
-    if (body.len <= identity_tag_len) return;
+    if (body.len <= radio_overhead_len) return;
 
     var msg: IncomingMessage = .{};
     var cs_buf: [identity_callsign_len]u8 = undefined;
@@ -421,7 +457,7 @@ fn onFrame(conn: *Connection, frame: []const u8) void {
     @memcpy(msg.callsign[0..cs.len], cs);
     msg.callsign_str_len = @intCast(cs.len);
 
-    if (!decodePacket(body[identity_tag_len..], &msg)) return;
+    if (!decodePacket(body[radio_overhead_len..], &msg)) return;
     conn.core.enqueueIncoming(msg);
 }
 
@@ -449,9 +485,10 @@ fn sendWireFrame(
     _ = call_to;
     const conn: *Connection = @fieldParentPtr("core", core);
     const tag = conn.identityTag() orelse return error.NoIdentity;
+    const seq = conn.nextTxSeq();
 
     var buf: [max_serial_frame_size + 3]u8 = undefined;
-    const n = writeTxCommand(&buf, tag, wire) orelse return error.PayloadTooLarge;
+    const n = writeTxCommand(&buf, tag, seq, wire) orelse return error.PayloadTooLarge;
 
     const w = core.writerInterface() orelse return error.NotConnected;
     try w.writeAll(buf[0..n]);
@@ -519,24 +556,25 @@ test "writeTxCommand wraps wire bytes in a length-prefixed SEND_RAW_PACKET frame
     const tag = [identity_tag_len]u8{ 0x95, 0x1A, 0x1B, 0xC7 };
     var buf: [max_serial_frame_size + 3]u8 = undefined;
 
-    const n = writeTxCommand(&buf, tag, &wire) orelse return error.TestUnexpectedResult;
+    const n = writeTxCommand(&buf, tag, 0x42, &wire) orelse return error.TestUnexpectedResult;
 
-    try testing.expectEqual(@as(usize, 3 + 4 + identity_tag_len + wire.len), n);
+    try testing.expectEqual(@as(usize, 3 + 4 + radio_overhead_len + wire.len), n);
     try testing.expectEqual(@as(u8, '<'), buf[0]);
-    try testing.expectEqual(@as(u16, 11), std.mem.readInt(u16, buf[1..3], .little));
+    try testing.expectEqual(@as(u16, 12), std.mem.readInt(u16, buf[1..3], .little));
     try testing.expectEqual(CMD_SEND_RAW_PACKET, buf[3]);
     try testing.expectEqual(default_tx_priority, buf[4]);
     try testing.expectEqual(raw_custom_direct_header, buf[5]);
     try testing.expectEqual(@as(u8, 0x00), buf[6]); // zero-hop path_length
     try testing.expectEqualSlices(u8, &tag, buf[7 .. 7 + identity_tag_len]);
-    try testing.expectEqualSlices(u8, &wire, buf[7 + identity_tag_len .. n]);
+    try testing.expectEqual(@as(u8, 0x42), buf[7 + identity_tag_len]); // tx seq
+    try testing.expectEqualSlices(u8, &wire, buf[12..n]);
 }
 
 test "writeTxCommand rejects wire bytes beyond the serial frame cap" {
-    var wire: [max_serial_frame_size - 4]u8 = undefined;
+    var wire: [max_serial_frame_size - radio_overhead_len]u8 = undefined;
     @memset(&wire, 0);
     var buf: [max_serial_frame_size + 3]u8 = undefined;
-    try testing.expect(writeTxCommand(&buf, .{0} ** identity_tag_len, &wire) == null);
+    try testing.expect(writeTxCommand(&buf, .{0} ** identity_tag_len, 0, &wire) == null);
 }
 
 test "identityHex renders uppercase callsign characters" {
@@ -618,21 +656,25 @@ test "raw data push becomes a decoded IncomingMessage; other frames are skipped"
     const frame_pkt = MessageFrame.init(.motd, chunk, &[_]u8{}, 3, 0, 1);
     const wire = frame_pkt.wireBytes();
 
-    // Wrap it in a PUSH_CODE_RAW_DATA frame with a sender identity tag.
+    // Wrap it in a PUSH_CODE_RAW_DATA frame: sender identity tag + tx seq.
     const sender_tag = [identity_tag_len]u8{ 0xDE, 0xAD, 0xBE, 0xEF };
-    var push: [4 + identity_tag_len + 128]u8 = undefined;
+    var push: [4 + radio_overhead_len + 128]u8 = undefined;
     push[0] = PUSH_CODE_RAW_DATA;
     push[1] = 0x28; // snr × 4
     push[2] = 0xC4; // rssi dBm (signed)
     push[3] = 0xFF; // reserved
-    @memcpy(push[4..][0..identity_tag_len], &sender_tag);
-    @memcpy(push[4 + identity_tag_len ..][0..wire.len], wire);
+    push[4] = sender_tag[0];
+    push[5] = sender_tag[1];
+    push[6] = sender_tag[2];
+    push[7] = sender_tag[3];
+    push[8] = 0x77; // tx seq (stripped on receive)
+    @memcpy(push[4 + radio_overhead_len ..][0..wire.len], wire);
 
-    var framed: [3 + 4 + identity_tag_len + 128]u8 = undefined;
-    const framed_len = 3 + 4 + identity_tag_len + wire.len;
+    var framed: [3 + 4 + radio_overhead_len + 128]u8 = undefined;
+    const framed_len = 3 + 4 + radio_overhead_len + wire.len;
     framed[0] = rx_marker;
-    std.mem.writeInt(u16, framed[1..3], @intCast(4 + identity_tag_len + wire.len), .little);
-    @memcpy(framed[3..framed_len], push[0 .. 4 + identity_tag_len + wire.len]);
+    std.mem.writeInt(u16, framed[1..3], @intCast(4 + radio_overhead_len + wire.len), .little);
+    @memcpy(framed[3..framed_len], push[0 .. 4 + radio_overhead_len + wire.len]);
 
     // Prepend an OK reply that must be skipped silently.
     var stream: [4 + framed.len]u8 = undefined;
