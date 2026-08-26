@@ -155,21 +155,6 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(server_exe);
 
-    // --- MeshCore serial probe (diagnostic tool) ---
-    const probe_exe = b.addExecutable(.{
-        .name = "meshcore-probe",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools/meshcore_probe.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "serial", .module = serial.module("serial") },
-                .{ .name = "bbs", .module = mod },
-            },
-        }),
-    });
-    b.installArtifact(probe_exe);
-
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.
