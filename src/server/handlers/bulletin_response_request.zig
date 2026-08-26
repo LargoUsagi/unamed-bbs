@@ -6,6 +6,7 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
+const messaging = kiss.messaging;
 const transport = kiss.transport;
 const signing = kiss.signing;
 const message_frame = kiss.message_frame;
@@ -16,9 +17,9 @@ const ServerCtx = context.ServerCtx;
 const outbox = @import("../outbox.zig");
 const routing = @import("../routing.zig");
 
-pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
-    const callsign = im.callsign[0..@min(im.callsign_str_len, message_frame.callsign_len)];
-    const payload_bytes = im.frame_payload[0..im.frame_payload_len];
+pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
+    const callsign = msg.callsignSlice();
+    const payload_bytes = msg.payloadSlice();
     const allocator = std.heap.page_allocator;
 
     try ctx.stderr.print("RX bulletin_response_request from {s}\n", .{callsign});
@@ -70,7 +71,7 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
             .outcome = .no_data,
             .detail = detail,
         } };
-        outbox.send(ctx, im.port, status_payload, .request_status, routing.Route.directed(callsign)) catch {};
+        outbox.send(ctx, msg.port, status_payload, .request_status, routing.Route.directed(callsign)) catch {};
         return;
     }
 
@@ -87,7 +88,7 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
             .create_datetime = r.create_datetime,
             .body = r.body,
         } };
-        outbox.send(ctx, im.port, out_payload, .bulletin_response, .broadcast_source) catch {
+        outbox.send(ctx, msg.port, out_payload, .bulletin_response, .broadcast_source) catch {
             try ctx.stderr.writeAll("  error: failed to send response\n");
             try ctx.stderr.flush();
             continue;

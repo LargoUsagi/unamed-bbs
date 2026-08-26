@@ -20,11 +20,10 @@
 //!     `count` (u8, 1B) + per entry: `user_id` (u16 LE, 2B)
 
 const std = @import("std");
-const frame = @import("frame.zig");
-const unishox2 = @import("../unishox2.zig");
 const limits = @import("limits.zig");
+const unishox2 = @import("../unishox2.zig");
 
-const max_payload_len = frame.max_payload_len;
+const max_chunk_len = limits.max_chunk_len;
 
 pub const public_key_len: usize = 32;
 
@@ -70,7 +69,7 @@ pub const UserInfo = struct {
 
         const fixed = 2 + 8 + 1 + 1 + public_key_len + 1 + 1;
         const total = fixed + compressed_handle.len + compressed_callsign.len + compressed_avatar.len;
-        if (total > max_payload_len) return null;
+        if (total > max_chunk_len) return null;
         if (buf.len < total) return null;
 
         var pos: usize = 0;
@@ -226,7 +225,7 @@ test "user_info encode/decode round trip" {
         .avatar = avatar_str,
     };
 
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = ui.encode(&buf) orelse return error.EncodeFailed;
 
     const decoded = (try UserInfo.decode(allocator, buf[0..n])) orelse return error.DecodeFailed;
@@ -242,7 +241,7 @@ test "user_info encode/decode round trip" {
 
 test "user_info encode rejects handle > max_handle_len bytes" {
     const long_handle = [_]u8{'x'} ** (limits.max_handle_len + 1);
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     try std.testing.expect((UserInfo{
         .id = 1,
         .registered_datetime = 0,
@@ -254,7 +253,7 @@ test "user_info encode rejects handle > max_handle_len bytes" {
 
 test "user_info encode rejects avatar > max_avatar_len bytes" {
     const long_avatar = [_]u8{'x'} ** (limits.max_avatar_len + 1);
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     try std.testing.expect((UserInfo{
         .id = 1,
         .registered_datetime = 0,
@@ -274,7 +273,7 @@ test "user_info decode rejects malformed (too short)" {
 
 test "user_info encode/decode with empty handle and callsign" {
     const allocator = std.testing.allocator;
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = (UserInfo{
         .id = 7,
         .registered_datetime = 0,
@@ -294,7 +293,7 @@ test "user_info encode/decode with empty handle and callsign" {
 test "user_info_request encode/decode round trip" {
     const allocator = std.testing.allocator;
     const ids = [_]u16{ 3, 7, 42, 100 };
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = (UserInfoRequest{ .user_ids = &ids }).encode(&buf) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(usize, 1 + 4 * 2), n);
 
@@ -309,13 +308,13 @@ test "user_info_request encode/decode round trip" {
 
 test "user_info_request encode rejects > 255 ids" {
     var many: [256]u16 = undefined;
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     try std.testing.expect((UserInfoRequest{ .user_ids = &many }).encode(&buf) == null);
 }
 
 test "user_info_request with empty list" {
     const allocator = std.testing.allocator;
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = (UserInfoRequest{ .user_ids = &.{} }).encode(&buf) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(usize, 1), n);
 

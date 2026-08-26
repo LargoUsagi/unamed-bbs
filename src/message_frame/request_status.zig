@@ -6,11 +6,10 @@
 //!   `request_id` (u16 LE, 2B) + `outcome` (u8, 1B) + `detail_len` (u16 LE, 2B) + `detail` (compressed)
 
 const std = @import("std");
-const frame = @import("frame.zig");
-const unishox2 = @import("../unishox2.zig");
 const limits = @import("limits.zig");
+const unishox2 = @import("../unishox2.zig");
 
-const max_encode_len = frame.max_encode_len;
+const max_encode_len = limits.max_encode_len;
 
 /// Outcome of a request. Wire values are stored as a single byte.
 /// New values can be appended; existing values must not be renumbered.

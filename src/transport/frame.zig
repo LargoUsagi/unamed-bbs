@@ -1,9 +1,18 @@
-//! `MessageFrame` — the wire-format struct carried inside an AGWPE data frame.
+//! `MessageFrame` — the transport-layer packet unit carried as one datagram
+//! payload over any link (AGWPE UI frame info field today, TCP envelope
+//! frame field).
 //!
-//! Combines an Ed25519 signature and a typed payload into a struct backed by a
-//! fixed byte array. The callsign is NOT included — it comes from the AGWPE
-//! frame header (AX.25 source address) on the receive side, and is supplied by
-//! the application on the send side.
+//! This is the lowest wire-format layer of the transport stack: it packs a
+//! message type, a packet sequence number/count pair, a group id, and a
+//! payload chunk (with an Ed25519 signature on packet 0 only) into a fixed
+//! byte array. Link transports never interpret these fields; the generic
+//! transport layer (`transport.zig`) builds them on send and `decodePacket`
+//! (`incoming.zig`) parses them on receive.
+//!
+//! Size limits (`max_chunk_len`, `max_encode_len`,
+//! `max_packets_per_message`) live in `message_frame/limits.zig` because the
+//! application payload codecs need them too; this module owns everything
+//! about the *packetization* layout.
 //!
 //! Layout for **packet 0** (the first packet of a logical message, always carries
 //! the signature):
@@ -12,23 +21,25 @@
 //!   offset 3      packet_count   (u8)
 //!   offset 4..5   payload_len    (u16, little-endian)
 //!   offset 6..69  signature      (64 bytes, Ed25519 — present on packet 0 only)
-//!   offset 70+    payload        (up to 256 bytes)
+//!   offset 70+    payload        (up to `max_chunk_len` bytes)
 //!
 //! Layout for **packet 1+** (continuation packets, no signature):
 //!   offset 0      version+msg_type (same 2-byte packing)
 //!   offset 2      packet_number  (u8)
 //!   offset 3      packet_count   (u8)
 //!   offset 4..5   payload_len    (u16, little-endian)
-//!   offset 6+     payload        (up to 256 bytes)
+//!   offset 6+     payload        (up to `max_chunk_len` bytes)
 //!
 //! The signature is over the **full reassembled payload** (not per-packet).
 //! Single-packet messages use packet_number=0, packet_count=1.
 
 const std = @import("std");
-const message_type = @import("message_type.zig");
+const signing = @import("../signing.zig");
+const limits = @import("../message_frame/limits.zig");
+const message_type = @import("../message_frame/message_type.zig");
 
-const MessageType = message_type.MessageType;
-const Payload = message_type.Payload;
+pub const MessageType = message_type.MessageType;
+pub const Payload = message_type.Payload;
 const encodePayload = message_type.encodePayload;
 
 /// Current protocol version (hardcoded; reserved for future protocol changes).
@@ -36,21 +47,21 @@ const encodePayload = message_type.encodePayload;
 pub const protocol_version: u4 = 0;
 
 /// Length of the Ed25519 signature field (present on packet 0 only).
-pub const signature_len: usize = 64;
+pub const signature_len: usize = signing.signature_len;
 
 /// Maximum payload per packet that fits in a `MessageFrame`.
-pub const max_payload_len: usize = 256;
+pub const max_chunk_len: usize = limits.max_chunk_len;
 
 /// Maximum number of packets in one multipart message.
 /// `packet_number` and `packet_count` are u8 fields in the wire header, so
 /// the index space is 0..255 (256 slots). Senders must not split a payload
 /// into more than this many chunks.
-pub const max_packets_per_message: usize = std.math.maxInt(u8) + 1;
+pub const max_packets_per_message: usize = limits.max_packets_per_message;
 
 /// Maximum size of a fully encoded payload before multipart splitting.
-/// Encode functions check against this (not `max_payload_len`) so that
+/// Encode functions check against this (not `max_chunk_len`) so that
 /// payloads larger than a single frame can be split by the sender.
-pub const max_encode_len: usize = 4096;
+pub const max_encode_len: usize = limits.max_encode_len;
 
 /// Header size (6 bytes): version+msg_type(2) + packet_number(1) + packet_count(1) + payload_len(2).
 const header_len: usize = 6;
@@ -72,12 +83,9 @@ const payload_off_p1: usize = header_len;
 
 /// Total size of a `MessageFrame` backing array in bytes (worst case: packet 0
 /// with max payload + signature).
-pub const message_frame_size: usize = payload_off_p0 + max_payload_len;
+pub const message_frame_size: usize = payload_off_p0 + max_chunk_len;
 
-/// Deprecated alias for `max_payload_len`.
-pub const max_compressed_len: usize = max_payload_len;
-
-/// Wire format carried inside an AGWPE data frame.
+/// Wire format carried as one link-layer datagram payload.
 pub const MessageFrame = struct {
     bytes: [message_frame_size]u8 = std.mem.zeroes([message_frame_size]u8),
 
@@ -111,7 +119,7 @@ pub const MessageFrame = struct {
         f.bytes[packet_number_off] = packet_number;
         f.bytes[packet_count_off] = packet_count;
 
-        const pn: u16 = @intCast(@min(payload.len, max_payload_len));
+        const pn: u16 = @intCast(@min(payload.len, max_chunk_len));
         std.mem.writeInt(u16, f.bytes[payload_len_off..][0..2], pn, .little);
 
         if (packet_number == 0) {
@@ -129,13 +137,13 @@ pub const MessageFrame = struct {
 
     /// Build a frame from a typed `Payload` and Ed25519 signature.
     /// Uses group_id=0, packet_number=0, packet_count=1 (single-packet).
-    /// Returns `null` if the serialized payload exceeds `max_payload_len`.
+    /// Returns `null` if the serialized payload exceeds `max_chunk_len`.
     pub fn fromPayload(payload: Payload, signature: []const u8) ?MessageFrame {
         var buf: [max_encode_len]u8 = undefined;
         const n = encodePayload(&buf, payload) orelse return null;
         const tag: MessageType = std.meta.activeTag(payload);
         // If the encoded payload fits in a single frame, return it directly.
-        if (n <= max_payload_len) {
+        if (n <= max_chunk_len) {
             return MessageFrame.init(tag, buf[0..n], signature, 0, 0, 1);
         }
         // Payload too large for a single frame — caller must use multipart splitting.
@@ -196,7 +204,7 @@ pub const MessageFrame = struct {
 
     /// Returns the valid portion of the payload.
     pub fn payloadBytes(self: *const MessageFrame) []const u8 {
-        const n = @min(self.payloadLen(), max_payload_len);
+        const n = @min(self.payloadLen(), max_chunk_len);
         const off = self.payloadOffset();
         return self.bytes[off..][0..n];
     }
@@ -205,7 +213,7 @@ pub const MessageFrame = struct {
     /// includes the 64-byte signature; for continuation packets it does not.
     /// No zero-padding is sent over the air.
     pub fn wireBytes(self: *const MessageFrame) []const u8 {
-        const n = @min(self.payloadLen(), max_payload_len);
+        const n = @min(self.payloadLen(), max_chunk_len);
         const off = self.payloadOffset();
         return self.bytes[0 .. off + n];
     }
@@ -234,7 +242,7 @@ pub const MessageFrame = struct {
         @memcpy(f.bytes[0..header_len], data[0..header_len]);
 
         const pl = f.payloadLen();
-        if (pl > max_payload_len) return null;
+        if (pl > max_chunk_len) return null;
 
         const is_p0 = (f.packetNumber() == 0);
         const wire_len = if (is_p0)
@@ -574,4 +582,25 @@ test "MessageFrame multipart round trip (packet 0 + continuation)" {
     try std.testing.expectEqual(@as(u8, 2), parsed1.packetCount());
     try std.testing.expectEqualSlices(u8, &chunk1, parsed1.payloadBytes());
     try std.testing.expect(!parsed1.hasSignature());
+}
+
+test "MessageFrame carries chunks up to the ceiling" {
+    var payload: [700]u8 = undefined;
+    for (&payload, 0..) |*b, i| b.* = @truncate(i);
+    const sig = [_]u8{0x5A} ** signature_len;
+
+    const f = MessageFrame.init(.bulletin, &payload, &sig, 1, 0, 1);
+    const wire = f.wireBytes();
+    try std.testing.expect(wire.len > 256 + 70); // genuinely beyond the old cap
+
+    const parsed = MessageFrame.fromBytes(wire) orelse return error.ParseFailed;
+    try std.testing.expectEqual(@as(u16, 700), parsed.payloadLen());
+    try std.testing.expectEqualSlices(u8, &payload, parsed.payloadBytes());
+    try std.testing.expectEqualSlices(u8, &sig, &parsed.signatureBytes());
+}
+
+test "MessageFrame init clamps at the chunk ceiling" {
+    var big: [max_chunk_len + 100]u8 = @splat(0xEE);
+    const f = MessageFrame.init(.motd, &big, &.{}, 0, 0, 1);
+    try std.testing.expectEqual(@as(u16, max_chunk_len), f.payloadLen());
 }

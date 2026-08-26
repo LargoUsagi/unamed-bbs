@@ -6,9 +6,9 @@
 //! own file under `message_frame/`.
 
 const std = @import("std");
-const frame = @import("frame.zig");
+const limits = @import("limits.zig");
 
-const max_encode_len = frame.max_encode_len;
+const max_encode_len = limits.max_encode_len;
 
 const public_key = @import("public_key.zig");
 const public_key_request = @import("public_key_request.zig");

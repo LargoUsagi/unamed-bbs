@@ -1,11 +1,14 @@
-//! Transport interface and shared send-side multipart splitting.
+//! Transport abstraction — the general data plane between concrete link
+//! implementations (AGWPE today, serial/meshcore/UDP in the future) and the
+//! session layer (`messaging.zig`).
 //!
-//! Defines a `Transport` vtable that layer-2 link implementations (AGWPE
-//! today, serial/meshcore/UDP in the future) satisfy. The key property each
-//! transport exposes is `mtu_payload`: the maximum payload bytes per packet
-//! chunk. `sendMultipart` uses this to split an outgoing payload into
-//! `MessageFrame` packets of the right size, delegating the actual wire
-//! transmission to `transport.sendWire`.
+//! Defines a `Transport` vtable that link implementations satisfy. The key
+//! property each transport exposes is `mtu_payload`: the maximum payload bytes
+//! per packet chunk. `sendMultipart` uses this to split an outgoing encoded
+//! payload into `MessageFrame` packets of the right size (`frame.zig`),
+//! delegating the actual wire transmission to `transport.sendWire`. On the
+//! receive side links yield decoded `IncomingMessage` packets
+//! (`incoming.zig`) which the session layer turns into complete messages.
 //!
 //! Connection establishment (`connect`) is intentionally NOT part of the
 //! vtable: its parameters are transport-specific (TCP host:port for AGWPE,
@@ -15,15 +18,21 @@
 //! `asTransport()` for the data plane.
 
 const std = @import("std");
-const message_frame = @import("../message_frame.zig");
 
-const MessageFrame = message_frame.MessageFrame;
-const MessageType = message_frame.MessageType;
+pub const frame = @import("frame.zig");
+pub const incoming = @import("incoming.zig");
 
-/// Re-exported so callers can reference the incoming-message type through the
-/// transport namespace. `IncomingMessage` is transport-neutral — it describes
-/// a decoded message-frame payload with source/destination callsigns.
-pub const IncomingMessage = message_frame.IncomingMessage;
+const MessageFrame = frame.MessageFrame;
+const MessageType = frame.MessageType;
+
+/// Re-exported so callers can reference the incoming-packet type through the
+/// transport namespace.
+pub const IncomingMessage = incoming.IncomingMessage;
+pub const decodePacket = incoming.decodePacket;
+pub const callsign_len = incoming.callsign_len;
+pub const max_encode_len = frame.max_encode_len;
+pub const max_chunk_len = frame.max_chunk_len;
+pub const max_packets_per_message = frame.max_packets_per_message;
 
 /// Options passed to `sendMultipart`. Transport-neutral: any concrete
 /// transport that supports multipart splitting uses these.
@@ -45,7 +54,7 @@ pub const FrameInfo = struct {
     group_id: u4,
     packet_number: u8,
     packet_count: u8,
-    /// The payload chunk for this specific packet (≤ `max_payload_len`).
+    /// The payload chunk for this specific packet (≤ `max_chunk_len`).
     chunk: []const u8,
     /// Ed25519 signature over the *full* payload (empty for continuation
     /// packets where `packet_number > 0`).
@@ -68,10 +77,10 @@ pub const Transport = struct {
     pub const VTable = struct {
         /// Maximum payload bytes per packet chunk. `sendMultipart` splits
         /// outgoing payloads into chunks of this size. AGWPE: 256 (matches
-        /// `message_frame.max_payload_len`); a future transport with a
+        /// `message_frame.max_chunk_len`); a future transport with a
         /// different MTU (e.g. meshcore at 255-byte radio frames) exposes
         /// its own smaller value. Must not exceed
-        /// `message_frame.max_payload_len` (the fixed backing-array cap).
+        /// `message_frame.max_chunk_len` (the fixed backing-array cap).
         mtu_payload: usize,
 
         /// True when the transport is a high-bandwidth link (e.g. direct
@@ -173,15 +182,15 @@ pub fn sendMultipart(
     if (!transport.isConnected()) return MultipartError.NotConnected;
 
     const chunk_size = transport.mtuPayload();
-    // The frame backing array is sized by `message_frame.max_payload_len`.
+    // The frame backing array is sized by `frame.max_chunk_len`.
     // A transport MTU larger than that would silently truncate chunks, so
     // catch misconfiguration early in debug builds.
-    std.debug.assert(chunk_size <= message_frame.max_payload_len);
+    std.debug.assert(chunk_size <= frame.max_chunk_len);
 
     // Retransmit path: send a single frame with explicit packet numbers.
     if (opts.packet_override) |po| {
         const chunk_len = @min(payload.len, chunk_size);
-        const frame = MessageFrame.init(
+        const frame_pkt = MessageFrame.init(
             msg_type,
             payload[0..chunk_len],
             sig,
@@ -189,7 +198,7 @@ pub fn sendMultipart(
             po.packet_number,
             po.packet_count,
         );
-        transport.sendWire(port, call_to, frame.wireBytes()) catch return MultipartError.NotConnected;
+        transport.sendWire(port, call_to, frame_pkt.wireBytes()) catch return MultipartError.NotConnected;
         if (observer) |o| o.observe(o.ctx, .{
             .msg_type = msg_type,
             .group_id = opts.group_id,
@@ -203,8 +212,8 @@ pub fn sendMultipart(
 
     // Single-packet message: fits in one chunk.
     if (payload.len <= chunk_size) {
-        const frame = MessageFrame.init(msg_type, payload, sig, opts.group_id, 0, 1);
-        transport.sendWire(port, call_to, frame.wireBytes()) catch return MultipartError.NotConnected;
+        const frame_pkt = MessageFrame.init(msg_type, payload, sig, opts.group_id, 0, 1);
+        transport.sendWire(port, call_to, frame_pkt.wireBytes()) catch return MultipartError.NotConnected;
         if (observer) |o| o.observe(o.ctx, .{
             .msg_type = msg_type,
             .group_id = opts.group_id,
@@ -218,7 +227,7 @@ pub fn sendMultipart(
 
     // Multipart: split into chunks, signature on packet 0 only.
     const total_calc = std.math.divTrunc(usize, payload.len + chunk_size - 1, chunk_size) catch unreachable;
-    if (total_calc > message_frame.max_packets_per_message) return MultipartError.PayloadTooLarge;
+    if (total_calc > frame.max_packets_per_message) return MultipartError.PayloadTooLarge;
     const total: u8 = @intCast(total_calc);
 
     var offset: usize = 0;
@@ -226,11 +235,11 @@ pub fn sendMultipart(
     while (offset < payload.len) : (pn += 1) {
         const chunk_len = @min(payload.len - offset, chunk_size);
         const chunk = payload[offset .. offset + chunk_len];
-        const frame = if (pn == 0)
+        const frame_pkt = if (pn == 0)
             MessageFrame.init(msg_type, chunk, sig, opts.group_id, pn, total)
         else
             MessageFrame.init(msg_type, chunk, &.{}, opts.group_id, pn, total);
-        transport.sendWire(port, call_to, frame.wireBytes()) catch return MultipartError.NotConnected;
+        transport.sendWire(port, call_to, frame_pkt.wireBytes()) catch return MultipartError.NotConnected;
         if (observer) |o| o.observe(o.ctx, .{
             .msg_type = msg_type,
             .group_id = opts.group_id,
@@ -261,24 +270,29 @@ fn stubDrainIncoming(_: *anyopaque, _: []IncomingMessage) usize {
 }
 fn stubDisconnect(_: *anyopaque) void {}
 
-fn makeStubTransport(high_bw: bool) Transport {
-    var ctx: *StubCtx = undefined;
-    return .{
-        .ctx = @ptrCast(&ctx),
-        .vtable = &.{
-            .mtu_payload = 256,
-            .high_bandwidth = high_bw,
-            .isConnected = stubIsConnected,
-            .sendWire = stubSendWire,
-            .drainIncoming = stubDrainIncoming,
-            .disconnect = stubDisconnect,
-        },
-    };
-}
-
+// The vtable literal carries a runtime `high_bandwidth` value, so it must
+// live in a static var — an anonymous literal would be a dangling temporary.
 test "Transport.isHighBandwidth reflects the vtable field" {
-    const high = makeStubTransport(true);
+    const vtable_high: Transport.VTable = .{
+        .mtu_payload = 256,
+        .high_bandwidth = true,
+        .isConnected = stubIsConnected,
+        .sendWire = stubSendWire,
+        .drainIncoming = stubDrainIncoming,
+        .disconnect = stubDisconnect,
+    };
+    const vtable_low: Transport.VTable = .{
+        .mtu_payload = 256,
+        .high_bandwidth = false,
+        .isConnected = stubIsConnected,
+        .sendWire = stubSendWire,
+        .drainIncoming = stubDrainIncoming,
+        .disconnect = stubDisconnect,
+    };
+    var ctx: *StubCtx = undefined;
+    const high = Transport{ .ctx = @ptrCast(&ctx), .vtable = &vtable_high };
+    const low = Transport{ .ctx = @ptrCast(&ctx), .vtable = &vtable_low };
+
     try testing.expect(high.isHighBandwidth());
-    const low = makeStubTransport(false);
     try testing.expect(!low.isHighBandwidth());
 }

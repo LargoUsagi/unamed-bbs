@@ -1,6 +1,6 @@
-//! TCP/IP direct transport — a length-delimited TCP connection that carries
-//! message frames between client and server without an AGWPE TNC / AX.25
-//! radio layer.
+//! TCP/IP direct link transport — a length-delimited TCP connection that
+//! carries message packets between client and server without an AGWPE TNC /
+//! AX.25 radio layer.
 //!
 //! The wire format is a simple length-delimited envelope:
 //!
@@ -14,11 +14,10 @@
 //!   [frame_len: u16 LE]           — message-frame wire bytes length
 //!   [frame_bytes: frame_len]      — the `MessageFrame` wire bytes
 //!
-//! This mirrors the AGWPE transport's data plane: `sendWire` wraps the
-//! message-frame bytes in the envelope, and the reader thread parses incoming
-//! envelopes and populates `IncomingMessage` with the callsigns + decoded
-//! frame. The transport satisfies the shared `transport.Transport` vtable so
-//! `sendMultipart` and all inbox/outbox logic works unchanged.
+//! This is a bottom-layer link implementation: `sendWire` wraps packet wire
+//! bytes in the envelope, and the reader thread parses incoming envelopes,
+//! populates `IncomingMessage` with the callsigns + decoded frame, and hands
+//! them to the generic layers above (`transport.zig`, `messaging.zig`).
 //!
 //! Two construction paths:
 //!   * `connect()`     — client side: open a TCP connection to a server.
@@ -29,30 +28,24 @@ const std = @import("std");
 const Io = std.Io;
 const net = Io.net;
 
-const message_frame = @import("../message_frame.zig");
-const transport = @import("transport.zig");
+/// Shared transport abstraction (`Transport` vtable + multipart splitting).
+pub const transport = @import("transport.zig");
+const incoming_mod = transport.incoming;
 
-pub const MessageFrame = message_frame.MessageFrame;
-pub const MessageType = message_frame.MessageType;
-pub const IncomingMessage = message_frame.IncomingMessage;
-pub const callsign_len = message_frame.callsign_len;
-
-/// Re-exported for callers that reference transport types through this module.
-pub const Transport = transport.Transport;
-pub const SendOptions = transport.SendOptions;
-pub const FrameInfo = transport.FrameInfo;
-pub const FrameObserver = transport.FrameObserver;
-
-/// Magic byte at the start of every TCP transport envelope.
-const magic: u8 = 0x4B;
+const IncomingMessage = incoming_mod.IncomingMessage;
+const decodePacket = incoming_mod.decodePacket;
+pub const callsign_len = incoming_mod.callsign_len;
 
 /// Maximum frame payload the parser will accept (matches AGWPE).
 pub const max_frame_payload: usize = 4096;
 
 /// Maximum payload bytes per packet chunk for the TCP transport. Set to
-/// `message_frame.max_payload_len` (256) to stay consistent with AGWPE and
-/// exercise the multipart path identically.
-pub const mtu_payload: usize = 256;
+/// `frame.max_chunk_len` (1024) — the wire has no radio MTU constraint, so
+/// TCP links use full-size chunks while radio links split smaller.
+pub const mtu_payload: usize = 1024;
+
+/// Magic byte at the start of every TCP transport envelope.
+const magic: u8 = 0x4B;
 
 // ---------------------------------------------------------------------------
 // Envelope read/write
@@ -349,7 +342,7 @@ const FullPathCtx = struct {
         _ = dest;
         if (self.len.* >= self.items.len) return;
         var msg: IncomingMessage = .{};
-        _ = message_frame.decodeIncoming(frame, &msg);
+        _ = decodePacket(frame, &msg);
         self.items[self.len.*] = msg;
         self.len.* += 1;
     }
@@ -377,8 +370,13 @@ test "EnvelopeParser rejects bad magic" {
 }
 
 // ---------------------------------------------------------------------------
-// Connection — persistent TCP connection with background reader
+// Connection — persistent TCP connection built on the shared
+// `connection.Core` scaffolding (reader thread, incoming queue, FIFO drain,
+// lifecycle). Only the TCP specifics live here: the length-delimited
+// envelope parser and the envelope transmit wrapper.
 // ---------------------------------------------------------------------------
+
+const connection_mod = @import("connection.zig");
 
 /// Persistent TCP connection for the direct TCP transport. Mirrors
 /// `agwpe.Connection`: keeps the socket open, sends framed envelopes on
@@ -388,213 +386,105 @@ test "EnvelopeParser rejects bad magic" {
 /// The Connection must be initialised with `connect()` (client) or
 /// `acceptStream()` (server) before use and cleaned up with `disconnect()` /
 /// `deinit()`. The struct must not be moved after connection because the
-/// internal `Stream.Writer` holds a pointer to the `write_buf` field.
+/// embedded core's `Stream.Writer` holds a pointer to its `write_buf` field.
 pub const Connection = struct {
-    io: Io = undefined,
-    allocator: std.mem.Allocator = undefined,
+    /// Shared scaffolding — lifecycle, writer, reader thread, incoming queue.
+    core: connection_mod.Core = .{ .link = &tcp_link },
+    /// Streaming envelope parser (owns partial-envelope state across reads).
+    parser: EnvelopeParser = .{},
 
-    stream: ?net.Stream = null,
-    write_buf: [4096]u8 = undefined,
-    writer: ?net.Stream.Writer = null,
-
-    reader_thread: ?std.Thread = null,
-    stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    is_connected: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-
-    incoming_mutex: std.Io.Mutex = .init,
-    incoming_queue: std.array_list.Managed(IncomingMessage) = undefined,
-    /// Read cursor into `incoming_queue` for FIFO draining. Messages before
-    /// this index have been drained; messages at and after are pending. Reset
-    /// to 0 (and the backing array cleared) once the queue empties.
-    drain_head: usize = 0,
-    /// True once `connect()` or `acceptStream()` has been called (and the
-    /// incoming_queue / allocator are initialized). Guards `disconnect` and
-    /// `deinit` from touching an uninitialized queue.
-    initialized: bool = false,
-
-    /// Source callsign for outgoing frames (set by CLI/TUI on the client;
-    /// set to the server callsign on the server side).
-    callsign: [callsign_len]u8 = std.mem.zeroes([callsign_len]u8),
-    callsign_len: u8 = 0,
-
-    /// Radio port/channel (kept for compatibility; always 0 for direct TCP).
-    port: u4 = 0,
+    pub fn isConnected(self: *const Connection) bool {
+        return self.core.isConnected();
+    }
 
     /// Open a TCP connection to `address` (client side).
     pub fn connect(
         self: *Connection,
-        io: Io,
-        address: net.IpAddress,
+        io: std.Io,
+        address: std.Io.net.IpAddress,
         allocator: std.mem.Allocator,
         port: u4,
         callsign: []const u8,
     ) !void {
-        self.io = io;
-        self.allocator = allocator;
-        self.port = port;
-        self.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
-        self.initialized = true;
-
-        self.callsign = std.mem.zeroes([callsign_len]u8);
-        const cn = @min(callsign.len, callsign_len);
-        @memcpy(self.callsign[0..cn], callsign[0..cn]);
-        self.callsign_len = @intCast(cn);
-
-        const stream = try address.connect(io, .{ .mode = .stream });
-        self.stream = stream;
-        self.writer = stream.writer(io, &self.write_buf);
-        self.stop.store(false, .release);
-        self.is_connected.store(true, .release);
-
-        self.reader_thread = try std.Thread.spawn(.{}, readerLoop, .{self});
+        return self.core.connect(io, address, allocator, port, callsign);
     }
 
     /// Wrap an already-accepted TCP stream (server side). The caller obtains
     /// the stream from `net.Server.accept()`.
     pub fn acceptStream(
         self: *Connection,
-        io: Io,
-        stream: net.Stream,
+        io: std.Io,
+        stream: std.Io.net.Stream,
         allocator: std.mem.Allocator,
         port: u4,
         callsign: []const u8,
     ) !void {
-        self.io = io;
-        self.allocator = allocator;
-        self.port = port;
-        self.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
-        self.initialized = true;
-
-        self.callsign = std.mem.zeroes([callsign_len]u8);
-        const cn = @min(callsign.len, callsign_len);
-        @memcpy(self.callsign[0..cn], callsign[0..cn]);
-        self.callsign_len = @intCast(cn);
-
-        self.stream = stream;
-        self.writer = stream.writer(io, &self.write_buf);
-        self.stop.store(false, .release);
-        self.is_connected.store(true, .release);
-
-        self.reader_thread = try std.Thread.spawn(.{}, readerLoop, .{self});
-    }
-
-    /// Return a `Transport` handle backed by this connection.
-    pub fn asTransport(self: *Connection) transport.Transport {
-        return .{ .ctx = @ptrCast(self), .vtable = &tcp_transport_vtable };
-    }
-
-    /// Low-level: send pre-built wire bytes wrapped in a TCP envelope.
-    fn sendWireFrame(self: *Connection, port: u4, call_to: []const u8, payload: []const u8) !void {
-        const call_from: []const u8 = self.callsign[0..self.callsign_len];
-
-        var buf: [max_envelope_size]u8 = undefined;
-        const n = writeEnvelope(&buf, port, call_from, call_to, payload) orelse return error.PayloadTooLarge;
-
-        const w = &self.writer.?.interface;
-        try w.writeAll(buf[0..n]);
-        try w.flush();
-    }
-
-    /// Drain up to `dest.len` queued incoming messages into `dest`, in FIFO
-    /// order. Returns the number copied. Messages that don't fit in `dest`
-    /// are retained for the next drain rather than discarded, so a burst
-    /// larger than the caller's buffer is processed across successive drains
-    /// instead of being silently dropped.
-    pub fn drainIncoming(self: *Connection, dest: []IncomingMessage) usize {
-        self.incoming_mutex.lockUncancelable(self.io);
-        defer self.incoming_mutex.unlock(self.io);
-        const items = self.incoming_queue.items;
-        const avail = items.len - self.drain_head;
-        const n = @min(avail, dest.len);
-        @memcpy(dest[0..n], items[self.drain_head..][0..n]);
-        self.drain_head += n;
-        if (self.drain_head >= items.len) {
-            self.drain_head = 0;
-            self.incoming_queue.clearRetainingCapacity();
-        }
-        return n;
-    }
-
-    /// Background reader thread: reads bytes, parses envelopes, decodes
-    /// message frames, and queues results for the main thread to drain.
-    fn readerLoop(self: *Connection) void {
-        var read_buf: [4096]u8 = undefined;
-        const stream = self.stream orelse return;
-        var reader = stream.reader(self.io, &read_buf);
-        var parser: EnvelopeParser = .{};
-
-        while (!self.stop.load(.acquire)) {
-            var data: [1][]u8 = .{&read_buf};
-            const n = reader.interface.readVec(&data) catch {
-                self.is_connected.store(false, .release);
-                return;
-            };
-            if (n == 0) {
-                self.is_connected.store(false, .release);
-                return;
-            }
-            parser.feed(read_buf[0..n], self, onEnvelope);
-        }
-    }
-
-    /// EnvelopeParser callback: dispatched for each complete envelope.
-    fn onEnvelope(self: *Connection, port: u8, src: []const u8, dest: []const u8, frame: []const u8) void {
-        var msg: IncomingMessage = .{ .port = @intCast(port & 0x0F) };
-
-        if (src.len > 0) {
-            @memcpy(msg.callsign[0..src.len], src);
-            msg.callsign_str_len = @intCast(src.len);
-            msg.has_callsign = true;
-        }
-        if (dest.len > 0) {
-            @memcpy(msg.dest_callsign[0..dest.len], dest);
-            msg.dest_callsign_str_len = @intCast(dest.len);
-            msg.has_dest_callsign = true;
-        }
-
-        _ = message_frame.decodeIncoming(frame, &msg);
-
-        self.incoming_mutex.lockUncancelable(self.io);
-        defer self.incoming_mutex.unlock(self.io);
-        self.incoming_queue.append(msg) catch {};
+        return self.core.acceptStream(io, stream, allocator, port, callsign);
     }
 
     pub fn disconnect(self: *Connection) void {
-        self.stop.store(true, .release);
-        self.is_connected.store(false, .release);
-
-        if (self.stream) |stream| {
-            stream.shutdown(self.io, .both) catch {};
-            stream.close(self.io);
-            self.stream = null;
-        }
-
-        if (self.reader_thread) |t| {
-            t.join();
-            self.reader_thread = null;
-        }
-
-        self.writer = null;
-        if (self.initialized) {
-            if (self.incoming_queue.items.len > 0) {
-                self.incoming_queue.clearRetainingCapacity();
-            }
-            self.drain_head = 0;
-        }
+        self.core.disconnect();
     }
 
     pub fn deinit(self: *Connection) void {
-        self.disconnect();
-        if (self.initialized) {
-            self.incoming_queue.deinit();
-        }
-        self.initialized = false;
+        self.core.deinit();
     }
 
-    pub fn isConnected(self: *const Connection) bool {
-        return self.is_connected.load(.acquire);
+    pub fn drainIncoming(self: *Connection, dest: []IncomingMessage) usize {
+        return self.core.drainIncoming(dest);
+    }
+
+    /// Return a `Transport` handle backed by this connection. The handle
+    /// borrows the connection and is valid as long as it lives.
+    pub fn asTransport(self: *Connection) transport.Transport {
+        return .{ .ctx = @ptrCast(self), .vtable = &tcp_transport_vtable };
     }
 };
+
+const tcp_link: connection_mod.Link = .{
+    .dispatch = dispatch,
+    .sendWire = sendWireFrame,
+};
+
+/// Link.dispatch: feed one batch of freshly-read stream bytes through the
+/// envelope parser.
+fn dispatch(core: *connection_mod.Core, data: []const u8) void {
+    const conn: *Connection = @fieldParentPtr("core", core);
+    conn.parser.feed(data, conn, onTcpEnvelope);
+}
+
+/// EnvelopeParser callback: dispatched for each complete envelope.
+fn onTcpEnvelope(conn: *Connection, port: u8, src: []const u8, dest: []const u8, frame_bytes: []const u8) void {
+    var msg: IncomingMessage = .{ .port = @intCast(port & 0x0F) };
+
+    if (src.len > 0) {
+        @memcpy(msg.callsign[0..src.len], src);
+        msg.callsign_str_len = @intCast(src.len);
+        msg.has_callsign = true;
+    }
+    if (dest.len > 0) {
+        @memcpy(msg.dest_callsign[0..dest.len], dest);
+        msg.dest_callsign_str_len = @intCast(dest.len);
+        msg.has_dest_callsign = true;
+    }
+
+    _ = decodePacket(frame_bytes, &msg);
+
+    conn.core.enqueueIncoming(msg);
+}
+
+/// Link.sendWire: low-level send of pre-built wire bytes wrapped in a TCP
+/// envelope.
+fn sendWireFrame(core: *connection_mod.Core, port: u4, call_to: []const u8, payload: []const u8) !void {
+    const call_from: []const u8 = core.callsign[0..core.callsign_len];
+
+    var buf: [max_envelope_size]u8 = undefined;
+    const n = writeEnvelope(&buf, port, call_from, call_to, payload) orelse return error.PayloadTooLarge;
+
+    const w = core.writerInterface().?;
+    try w.writeAll(buf[0..n]);
+    try w.flush();
+}
 
 // ---------------------------------------------------------------------------
 // Transport vtable
@@ -610,13 +500,13 @@ const tcp_transport_vtable: transport.Transport.VTable = .{
 };
 
 fn transportIsConnected(ctx: *anyopaque) bool {
-    const self: *const Connection = @ptrCast(@alignCast(ctx));
+    const self: *Connection = @ptrCast(@alignCast(ctx));
     return self.isConnected();
 }
 
 fn transportSendWire(ctx: *anyopaque, port: u4, call_to: []const u8, wire: []const u8) anyerror!void {
     const self: *Connection = @ptrCast(@alignCast(ctx));
-    return self.sendWireFrame(port, call_to, wire);
+    return self.core.sendWire(port, call_to, wire);
 }
 
 fn transportDrainIncoming(ctx: *anyopaque, dest: []transport.IncomingMessage) usize {
@@ -627,92 +517,4 @@ fn transportDrainIncoming(ctx: *anyopaque, dest: []transport.IncomingMessage) us
 fn transportDisconnect(ctx: *anyopaque) void {
     const self: *Connection = @ptrCast(@alignCast(ctx));
     self.disconnect();
-}
-
-// ---------------------------------------------------------------------------
-// Tests — Connection.drainIncoming FIFO retention
-// ---------------------------------------------------------------------------
-
-test "drainIncoming retains messages beyond dest capacity (FIFO)" {
-    const allocator = std.testing.allocator;
-    var conn: Connection = .{};
-    conn.io = std.testing.io;
-    conn.allocator = allocator;
-    conn.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
-    conn.initialized = true;
-    defer conn.incoming_queue.deinit();
-
-    // Queue 20 dummy messages whose port encodes their original index (mod 16).
-    for (0..20) |i| {
-        var msg: IncomingMessage = .{};
-        msg.port = @intCast(i & 0x0F);
-        try conn.incoming_queue.append(msg);
-    }
-
-    // dest holds 8; the other 12 must be retained for the next drain.
-    var dest: [8]IncomingMessage = undefined;
-    const n1 = conn.drainIncoming(&dest);
-    try std.testing.expectEqual(@as(usize, 8), n1);
-    try std.testing.expectEqual(@as(usize, 20), conn.incoming_queue.items.len);
-    try std.testing.expectEqual(@as(usize, 8), conn.drain_head);
-    for (dest[0..8], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast(i & 0x0F)), m.port);
-    }
-
-    // Drain the next 8 — order preserved, still not fully drained.
-    var dest2: [8]IncomingMessage = undefined;
-    const n2 = conn.drainIncoming(&dest2);
-    try std.testing.expectEqual(@as(usize, 8), n2);
-    try std.testing.expectEqual(@as(usize, 16), conn.drain_head);
-    for (dest2[0..8], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast((8 + i) & 0x0F)), m.port);
-    }
-
-    // Drain the final 4 — queue empties, head resets to 0 and backing clears.
-    var dest3: [8]IncomingMessage = undefined;
-    const n3 = conn.drainIncoming(&dest3);
-    try std.testing.expectEqual(@as(usize, 4), n3);
-    try std.testing.expectEqual(@as(usize, 0), conn.drain_head);
-    try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
-    for (dest3[0..4], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast((16 + i) & 0x0F)), m.port);
-    }
-
-    // A further drain returns 0 (and stays empty).
-    var dest4: [4]IncomingMessage = undefined;
-    try std.testing.expectEqual(@as(usize, 0), conn.drainIncoming(&dest4));
-}
-
-test "drainIncoming drains newly appended messages after a partial drain" {
-    const allocator = std.testing.allocator;
-    var conn: Connection = .{};
-    conn.io = std.testing.io;
-    conn.allocator = allocator;
-    conn.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
-    conn.initialized = true;
-    defer conn.incoming_queue.deinit();
-
-    for (0..5) |i| {
-        var msg: IncomingMessage = .{};
-        msg.port = @intCast(i);
-        try conn.incoming_queue.append(msg);
-    }
-    var dest: [3]IncomingMessage = undefined;
-    try std.testing.expectEqual(@as(usize, 3), conn.drainIncoming(&dest));
-
-    // Reader thread appends more while 2 are still pending.
-    for (5..8) |i| {
-        var msg: IncomingMessage = .{};
-        msg.port = @intCast(i);
-        try conn.incoming_queue.append(msg);
-    }
-
-    // Pending 2 + newly appended 3 = 5 available, in FIFO order.
-    var dest2: [10]IncomingMessage = undefined;
-    const n = conn.drainIncoming(&dest2);
-    try std.testing.expectEqual(@as(usize, 5), n);
-    for (dest2[0..5], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast(i + 3)), m.port);
-    }
-    try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
 }

@@ -11,6 +11,7 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
+const messaging = kiss.messaging;
 const transport = kiss.transport;
 const message_frame = kiss.message_frame;
 
@@ -19,20 +20,20 @@ const ServerCtx = context.ServerCtx;
 
 const outbox = @import("../outbox.zig");
 
-pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
-    const callsign = im.callsign[0..@min(im.callsign_str_len, message_frame.callsign_len)];
-    const payload_bytes = im.frame_payload[0..im.frame_payload_len];
+pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
+    const callsign = msg.callsignSlice();
+    const payload_bytes = msg.payloadSlice();
     const allocator = std.heap.page_allocator;
 
     try ctx.stderr.print("RX avatar_update from {s}\n", .{callsign});
     try ctx.stderr.flush();
 
-    if (!im.signed) {
+    if (!msg.signed) {
         try ctx.stderr.writeAll("  ignoring: unsigned avatar_update\n");
         try ctx.stderr.flush();
         return;
     }
-    var user = ctx.store.findUserBySignature(im.signature, payload_bytes) orelse {
+    var user = ctx.store.findUserBySignature(msg.signature, payload_bytes) orelse {
         try ctx.stderr.writeAll("  ignoring: signature does not match any registered user\n");
         try ctx.stderr.flush();
         return;
@@ -75,7 +76,7 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
     };
 
     // Re-broadcast the updated user_info so all clients refresh their cache.
-    outbox.broadcastUserInfo(ctx, im.port, user.id, .broadcast_source) catch {
+    outbox.broadcastUserInfo(ctx, msg.port, user.id, .broadcast_source) catch {
         try ctx.stderr.writeAll("  error: failed to broadcast updated user_info\n");
         try ctx.stderr.flush();
     };

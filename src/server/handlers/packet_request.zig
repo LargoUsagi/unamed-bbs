@@ -5,28 +5,29 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
+const messaging = kiss.messaging;
 const transport = kiss.transport;
 const message_frame = kiss.message_frame;
 
 const context = @import("../context.zig");
 const ServerCtx = context.ServerCtx;
 
-pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
-    const callsign = im.callsign[0..@min(im.callsign_str_len, message_frame.callsign_len)];
-    const payload_bytes = im.frame_payload[0..im.frame_payload_len];
+pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
+    const callsign = msg.callsignSlice();
+    const payload_bytes = msg.payloadSlice();
     const allocator = std.heap.page_allocator;
 
-    try ctx.stderr.print("RX packet_request from {s} (group_id={d})\n", .{ callsign, im.group_id });
+    try ctx.stderr.print("RX packet_request from {s} (group_id={d})\n", .{ callsign, msg.group_id });
     try ctx.stderr.flush();
 
     // Verify the requester's signature against their stored key.
     // The sender is identified by their signing key, not by callsign.
-    if (!im.signed) {
+    if (!msg.signed) {
         try ctx.stderr.writeAll("  ignoring: packet_request not signed\n");
         try ctx.stderr.flush();
         return;
     }
-    var requester = ctx.store.findUserBySignature(im.signature, payload_bytes) orelse {
+    var requester = ctx.store.findUserBySignature(msg.signature, payload_bytes) orelse {
         try ctx.stderr.writeAll("  ignoring: signature does not match any registered user\n");
         try ctx.stderr.flush();
         return;
@@ -57,9 +58,9 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
     var retransmitted: usize = 0;
     for (req.packet_numbers) |pn| {
         if (ctx.pool.get(ctx.source_transport_id)) |t| {
-            if (t.cache.lookup(ctx.io, im.group_id, pn)) |entry| {
+            if (t.cache.lookup(ctx.io, msg.group_id, pn)) |entry| {
                 const sig_slice = if (entry.has_signature) &entry.signature else &.{};
-                t.sendRaw(im.port, "CQ", entry.msg_type, entry.chunk[0..entry.chunk_len], sig_slice, .{
+                t.sendRaw(msg.port, "CQ", entry.msg_type, entry.chunk[0..entry.chunk_len], sig_slice, .{
                     .group_id = entry.group_id,
                     .packet_override = .{ .packet_number = entry.packet_number, .packet_count = entry.packet_count },
                 });

@@ -1,8 +1,12 @@
-//! AGWPE TNC framing, transport, and connection management.
+//! AGWPE TNC link transport — framing, parser, and connection.
 //!
-//! Implements the AGW Packet Engine (AGWPE) TCP protocol used by ham radio
-//! TNCs such as Direwolf. When Direwolf is run with AGWPE enabled (default
-//! port 8000), a TCP client speaks the AGWPE frame format over the socket.
+//! This is the bottom-layer link implementation of the transport stack: it
+//! speaks the AGW Packet Engine (AGWPE) TCP protocol used by ham radio TNCs
+//! such as Direwolf (AGWPE enabled, default port 8000), wraps packet wire
+//! bytes in UI frames on send, and parses raw AX.25 'K' frames on receive,
+//! yielding decoded `transport.incoming.IncomingMessage` packets. It knows
+//! nothing about message payloads or signatures — those are handled by the
+//! generic layers above it (`transport.zig`, `messaging.zig`).
 //!
 //! AGWPE provides source/destination callsigns in the frame header, so the
 //! application can display the sender's callsign without embedding it in the
@@ -35,46 +39,17 @@ const std = @import("std");
 const Io = std.Io;
 const net = Io.net;
 
-// MessageFrame and related constants live in their own module.
-pub const message_frame = @import("../message_frame.zig");
+/// Shared transport abstraction (`Transport` vtable + multipart splitting).
 pub const transport = @import("transport.zig");
-pub const MessageFrame = message_frame.MessageFrame;
-pub const MessageType = message_frame.MessageType;
-pub const Payload = message_frame.Payload;
-pub const PublicKeyRole = message_frame.PublicKeyRole;
-pub const PublicKeyPayload = message_frame.PublicKeyPayload;
-pub const BulletinRequest = message_frame.BulletinRequest;
-pub const Bulletin = message_frame.Bulletin;
-pub const BulletinSummary = message_frame.BulletinSummary;
-pub const BulletinList = message_frame.BulletinList;
-pub const BulletinResponse = message_frame.BulletinResponse;
-pub const BulletinResponseList = message_frame.BulletinResponseList;
-pub const BulletinResponseRequest = message_frame.BulletinResponseRequest;
-pub const ResponseRequestMode = message_frame.ResponseRequestMode;
-pub const signature_len = message_frame.signature_len;
-pub const protocol_version = message_frame.protocol_version;
-pub const max_compressed_len = message_frame.max_compressed_len;
-pub const message_frame_size = message_frame.message_frame_size;
-pub const max_packets_per_message = message_frame.max_packets_per_message;
-pub const callsign_len = message_frame.callsign_len;
+const incoming_mod = transport.incoming;
 
-/// Options passed to `Connection.sendFrame` / `sendFrameTo`.
-/// Re-exported from the transport abstraction — these types are
-/// transport-neutral.
-pub const SendOptions = transport.SendOptions;
-
-/// Information about a single frame built by `sendFrame` / `sendFrameTo`,
-/// passed to an optional `FrameObserver`.  The server uses this to populate
-/// its retransmission cache.
-pub const FrameInfo = transport.FrameInfo;
-
-/// Observer callback invoked for every frame built by `sendFrame` /
-/// `sendFrameTo`.  Pass `null` when you don't need per-frame info (e.g. the
-/// TUI client).
-pub const FrameObserver = transport.FrameObserver;
+const IncomingMessage = incoming_mod.IncomingMessage;
+const decodePacket = incoming_mod.decodePacket;
+const SendOptions = transport.SendOptions;
+const FrameObserver = transport.FrameObserver;
 
 /// Size of the AGWPE callsign field in the header (CallFrom/CallTo).
-pub const agw_callsign_len: usize = 10;
+pub const agw_callsign_len: usize = incoming_mod.callsign_len;
 
 /// Size of the fixed AGWPE header.
 pub const agw_header_size: usize = 36;
@@ -401,21 +376,21 @@ test "writeHeader produces correct layout" {
 }
 
 // ---------------------------------------------------------------------------
-// Incoming message decoding
+// Incoming packet decoding
 // ---------------------------------------------------------------------------
 
-/// A decoded incoming message. Defined in `message_frame.zig` (transport-
-/// neutral) and re-exported here so existing `agwpe.IncomingMessage`
-/// references continue to work.
-pub const IncomingMessage = message_frame.IncomingMessage;
-
-/// Parse raw wire bytes into an `IncomingMessage`'s frame fields. Re-exported
-/// from `message_frame.zig`.
-pub const decodeIncoming = message_frame.decodeIncoming;
+// `IncomingMessage` and `decodePacket` come from `transport.incoming` —
+// see the imports at the top of this file.
 
 // ---------------------------------------------------------------------------
-// Connection — persistent TCP connection with background reader
+// Connection — persistent TCP connection to an AGWPE TNC, built on the
+// shared `connection.Core` scaffolding (reader thread, incoming queue,
+// FIFO drain, lifecycle). Only the AGWPE specifics live here: frame
+// parsing ('K' raw AX.25 frames), the 'V' UI transmit wrapper, and the
+// 'R' + 'k' post-connect handshake.
 // ---------------------------------------------------------------------------
+
+const connection_mod = @import("connection.zig");
 
 /// Persistent TCP connection to an AGWPE TNC (e.g. Direwolf). Keeps the socket
 /// open, sends UI frames on demand from the main thread, and runs a background
@@ -425,262 +400,142 @@ pub const decodeIncoming = message_frame.decodeIncoming;
 ///
 /// The Connection must be initialised with `connect()` before use and cleaned
 /// up with `disconnect()` / `deinit()`. The struct must not be moved after
-/// `connect()` because the internal `Stream.Writer` holds a pointer to the
-/// `write_buf` field.
+/// `connect()` because the embedded core's `Stream.Writer` holds a pointer to
+/// its `write_buf` field.
 pub const Connection = struct {
-    io: Io = undefined,
-    allocator: std.mem.Allocator = undefined,
+    /// Shared scaffolding — lifecycle, writer, reader thread, incoming queue.
+    core: connection_mod.Core = .{ .link = &agwpe_link },
+    /// AGWPE streaming frame parser (owns partial-frame state across reads).
+    parser: FrameParser = .{},
 
-    stream: ?net.Stream = null,
-    write_buf: [4096]u8 = undefined,
-    writer: ?net.Stream.Writer = null,
+    pub fn isConnected(self: *const Connection) bool {
+        return self.core.isConnected();
+    }
 
-    reader_thread: ?std.Thread = null,
-    stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    is_connected: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-
-    incoming_mutex: std.Io.Mutex = .init,
-    incoming_queue: std.array_list.Managed(IncomingMessage) = undefined,
-    /// Read cursor into `incoming_queue` for FIFO draining. Messages before
-    /// this index have been drained; messages at and after are pending. Reset
-    /// to 0 (and the backing array cleared) once the queue empties.
-    drain_head: usize = 0,
-
-    /// Source callsign for outgoing UI frames (set by CLI/TUI).
-    callsign: [agw_callsign_len]u8 = std.mem.zeroes([agw_callsign_len]u8),
-    callsign_len: u8 = 0,
-
-    /// Radio port/channel.
-    port: u4 = 0,
-
-    /// Open the TCP connection, send 'R' (version) and 'k' (enable raw RX),
-    /// and start the reader thread.
+    /// Open the TCP connection to the TNC, send 'R' (version) and 'k' (enable
+    /// raw RX), and start the reader thread.
     pub fn connect(
         self: *Connection,
-        io: Io,
-        address: net.IpAddress,
+        io: std.Io,
+        address: std.Io.net.IpAddress,
         allocator: std.mem.Allocator,
         port: u4,
         callsign: []const u8,
     ) !void {
-        self.io = io;
-        self.allocator = allocator;
-        self.port = port;
-        self.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
-
-        // Store callsign for outgoing frames.
-        self.callsign = std.mem.zeroes([agw_callsign_len]u8);
-        const cn = @min(callsign.len, agw_callsign_len);
-        @memcpy(self.callsign[0..cn], callsign[0..cn]);
-        self.callsign_len = @intCast(cn);
-
-        const stream = try address.connect(io, .{ .mode = .stream });
-        self.stream = stream;
-        self.writer = stream.writer(io, &self.write_buf);
-        self.stop.store(false, .release);
-        self.is_connected.store(true, .release);
-
-        // Send 'R' — Request version number.
-        var ver_hdr: [agw_header_size]u8 = std.mem.zeroes([agw_header_size]u8);
-        ver_hdr[4] = 'R';
-        try self.writer.?.interface.writeAll(&ver_hdr);
-
-        // Send 'k' — Enable raw AX.25 frame reception.
-        var raw_hdr: [agw_header_size]u8 = std.mem.zeroes([agw_header_size]u8);
-        raw_hdr[4] = 'k';
-        try self.writer.?.interface.writeAll(&raw_hdr);
-        try self.writer.?.interface.flush();
-
-        self.reader_thread = try std.Thread.spawn(.{}, readerLoop, .{self});
-    }
-
-    /// Send a signed message frame to "CQ" (broadcast), automatically
-    /// splitting into multipart frames if the payload exceeds the transport
-    /// MTU. The signature is computed by the caller over the full payload
-    /// and included only on packet 0.
-    ///
-    /// `opts.group_id` identifies the logical message (0–15).  For
-    /// retransmission of a specific packet, set `opts.packet_override` — this
-    /// sends a single frame with the given packet_number/packet_count and
-    /// skips splitting.
-    ///
-    /// `observer` (optional) is invoked for every frame built, so callers (e.g.
-    /// the server) can cache per-packet info for NAK retransmission.
-    pub fn sendFrame(
-        self: *Connection,
-        port: u4,
-        msg_type: message_frame.MessageType,
-        payload: []const u8,
-        sig: []const u8,
-        opts: SendOptions,
-        observer: ?FrameObserver,
-    ) !void {
-        try self.sendFrameTo(port, "CQ", msg_type, payload, sig, opts, observer);
-    }
-
-    /// Send a signed message frame to a specific callsign, automatically
-    /// splitting into multipart frames if the payload exceeds the transport
-    /// MTU. See `sendFrame` for parameter docs.
-    pub fn sendFrameTo(
-        self: *Connection,
-        port: u4,
-        call_to: []const u8,
-        msg_type: message_frame.MessageType,
-        payload: []const u8,
-        sig: []const u8,
-        opts: SendOptions,
-        observer: ?FrameObserver,
-    ) !void {
-        try transport.sendMultipart(self.asTransport(), port, call_to, msg_type, payload, sig, opts, observer);
-    }
-
-    /// Return a `Transport` handle backed by this connection. The handle
-    /// borrows `self` and is valid as long as the connection lives.
-    pub fn asTransport(self: *Connection) transport.Transport {
-        return .{ .ctx = @ptrCast(self), .vtable = &agwpe_transport_vtable };
-    }
-
-    /// Low-level: send pre-built wire bytes as a UI frame via 'V'.
-    fn sendWireFrame(self: *Connection, port: u4, call_to: []const u8, payload: []const u8) !void {
-        const call_from: []const u8 = self.callsign[0..self.callsign_len];
-        const data_len: u32 = @intCast(1 + payload.len); // 1 byte ndigi + payload
-
-        var hdr: [agw_header_size]u8 = undefined;
-        writeHeader(&hdr, @as(u8, port), 'V', ax25_pid_no_l3, call_from, call_to, data_len);
-
-        const w = &self.writer.?.interface;
-        try w.writeAll(&hdr);
-        try w.writeAll(&.{0x00}); // zero digipeaters
-        try w.writeAll(payload);
-        try w.flush();
-    }
-
-    /// Drain up to `dest.len` queued incoming messages into `dest`, in FIFO
-    /// order. Returns the number copied. Messages that don't fit in `dest`
-    /// are retained for the next drain rather than discarded, so a burst
-    /// larger than the caller's buffer is processed across successive drains
-    /// instead of being silently dropped.
-    pub fn drainIncoming(self: *Connection, dest: []IncomingMessage) usize {
-        self.incoming_mutex.lockUncancelable(self.io);
-        defer self.incoming_mutex.unlock(self.io);
-        const items = self.incoming_queue.items;
-        const avail = items.len - self.drain_head;
-        const n = @min(avail, dest.len);
-        @memcpy(dest[0..n], items[self.drain_head..][0..n]);
-        self.drain_head += n;
-        if (self.drain_head >= items.len) {
-            self.drain_head = 0;
-            self.incoming_queue.clearRetainingCapacity();
-        }
-        return n;
-    }
-
-    /// Background reader thread: reads bytes, parses AGWPE frames, decodes
-    /// 'K' frame payloads, and queues results for the TUI to drain.
-    fn readerLoop(self: *Connection) void {
-        var read_buf: [4096]u8 = undefined;
-        const stream = self.stream orelse return;
-        var reader = stream.reader(self.io, &read_buf);
-        var parser: FrameParser = .{};
-
-        while (!self.stop.load(.acquire)) {
-            var data: [1][]u8 = .{&read_buf};
-            const n = reader.interface.readVec(&data) catch {
-                self.is_connected.store(false, .release);
-                return;
-            };
-            if (n == 0) {
-                self.is_connected.store(false, .release);
-                return;
-            }
-            parser.feed(read_buf[0..n], self, onFrame);
-        }
-    }
-
-    /// FrameParser callback: dispatched for each complete AGWPE frame.
-    fn onFrame(self: *Connection, header: *const [agw_header_size]u8, data: []const u8) void {
-        const kind = header[4];
-
-        switch (kind) {
-            'K' => {
-                // Raw AX.25 frame received — extract callsign from AGWPE header.
-                const frame_port: u4 = @intCast(header[0] & 0x0F);
-
-                var msg: IncomingMessage = .{ .port = frame_port };
-
-                if (parseAgwCallsign(header[8..18])) |cs| {
-                    @memcpy(msg.callsign[0..cs.len], cs);
-                    msg.callsign_str_len = @intCast(cs.len);
-                    msg.has_callsign = true;
-                }
-
-                // Extract the destination callsign (call_to) from the AGWPE
-                // header so directed messages can be filtered by callsign.
-                if (parseAgwCallsign(header[18..28])) |cs| {
-                    @memcpy(msg.dest_callsign[0..cs.len], cs);
-                    msg.dest_callsign_str_len = @intCast(cs.len);
-                    msg.has_dest_callsign = true;
-                }
-
-                // Extract the AX.25 info field, then decode the message frame.
-                // data is: [channel_byte] + [raw AX.25 frame].
-                if (data.len >= 2) {
-                    const raw_frame = data[1..];
-                    const payload = extractAx25Info(raw_frame) orelse raw_frame;
-                    _ = message_frame.decodeIncoming(payload, &msg);
-                }
-
-                self.incoming_mutex.lockUncancelable(self.io);
-                defer self.incoming_mutex.unlock(self.io);
-                self.incoming_queue.append(msg) catch {};
-            },
-            else => {}, // Ignore 'R', 'G', 'g', 'X', etc.
-        }
+        return self.core.connect(io, address, allocator, port, callsign);
     }
 
     pub fn disconnect(self: *Connection) void {
-        self.stop.store(true, .release);
-        self.is_connected.store(false, .release);
-
-        if (self.stream) |stream| {
-            stream.shutdown(self.io, .both) catch {};
-            stream.close(self.io);
-            self.stream = null;
-        }
-
-        if (self.reader_thread) |t| {
-            t.join();
-            self.reader_thread = null;
-        }
-
-        self.writer = null;
-        if (self.incoming_queue.items.len > 0) {
-            self.incoming_queue.clearRetainingCapacity();
-        }
-        self.drain_head = 0;
+        self.core.disconnect();
     }
 
     pub fn deinit(self: *Connection) void {
-        self.disconnect();
-        self.incoming_queue.deinit();
+        self.core.deinit();
     }
 
-    pub fn isConnected(self: *const Connection) bool {
-        return self.is_connected.load(.acquire);
+    pub fn drainIncoming(self: *Connection, dest: []IncomingMessage) usize {
+        return self.core.drainIncoming(dest);
+    }
+
+    /// Return a `Transport` handle backed by this connection. The handle
+    /// borrows the connection and is valid as long as it lives.
+    pub fn asTransport(self: *Connection) transport.Transport {
+        return .{ .ctx = @ptrCast(self), .vtable = &agwpe_transport_vtable };
     }
 };
+
+const agwpe_link: connection_mod.Link = .{
+    .dispatch = dispatch,
+    .sendWire = sendWireFrame,
+    .postConnect = postConnect,
+};
+
+fn postConnect(core: *connection_mod.Core) anyerror!void {
+    // Send 'R' — Request version number.
+    var ver_hdr: [agw_header_size]u8 = std.mem.zeroes([agw_header_size]u8);
+    ver_hdr[4] = 'R';
+    try core.writerInterface().?.writeAll(&ver_hdr);
+
+    // Send 'k' — Enable raw AX.25 frame reception.
+    var raw_hdr: [agw_header_size]u8 = std.mem.zeroes([agw_header_size]u8);
+    raw_hdr[4] = 'k';
+    try core.writerInterface().?.writeAll(&raw_hdr);
+    try core.writerInterface().?.flush();
+}
+
+/// Link.dispatch: feed one batch of freshly-read stream bytes through the
+/// AGWPE frame parser.
+fn dispatch(core: *connection_mod.Core, data: []const u8) void {
+    const conn: *Connection = @fieldParentPtr("core", core);
+    conn.parser.feed(data, conn, onAgwpeFrame);
+}
+
+/// FrameParser callback: dispatched for each complete AGWPE frame.
+fn onAgwpeFrame(conn: *Connection, header: *const [agw_header_size]u8, data: []const u8) void {
+    const kind = header[4];
+
+    switch (kind) {
+        'K' => {
+            // Raw AX.25 frame received — extract callsign from AGWPE header.
+            const frame_port: u4 = @intCast(header[0] & 0x0F);
+
+            var msg: IncomingMessage = .{ .port = frame_port };
+
+            if (parseAgwCallsign(header[8..18])) |cs| {
+                @memcpy(msg.callsign[0..cs.len], cs);
+                msg.callsign_str_len = @intCast(cs.len);
+                msg.has_callsign = true;
+            }
+
+            // Extract the destination callsign (call_to) from the AGWPE
+            // header so directed messages can be filtered by callsign.
+            if (parseAgwCallsign(header[18..28])) |cs| {
+                @memcpy(msg.dest_callsign[0..cs.len], cs);
+                msg.dest_callsign_str_len = @intCast(cs.len);
+                msg.has_dest_callsign = true;
+            }
+
+            // Extract the AX.25 info field, then decode the message frame.
+            // data is: [channel_byte] + [raw AX.25 frame].
+            if (data.len >= 2) {
+                const raw_frame = data[1..];
+                const payload = extractAx25Info(raw_frame) orelse raw_frame;
+                _ = decodePacket(payload, &msg);
+            }
+
+            conn.core.enqueueIncoming(msg);
+        },
+        else => {}, // Ignore 'R', 'G', 'g', 'X', etc.
+    }
+}
+
+/// Link.sendWire: low-level send of pre-built wire bytes as a UI frame via 'V'.
+fn sendWireFrame(core: *connection_mod.Core, port: u4, call_to: []const u8, payload: []const u8) !void {
+    const call_from: []const u8 = core.callsign[0..core.callsign_len];
+    const data_len: u32 = @intCast(1 + payload.len); // 1 byte ndigi + payload
+
+    var hdr: [agw_header_size]u8 = undefined;
+    writeHeader(&hdr, @as(u8, port), 'V', ax25_pid_no_l3, call_from, call_to, data_len);
+
+    const w = core.writerInterface().?;
+    try w.writeAll(&hdr);
+    try w.writeAll(&.{0x00}); // zero digipeaters
+    try w.writeAll(payload);
+    try w.flush();
+}
 
 // ---------------------------------------------------------------------------
 // Transport vtable — lets `Connection` satisfy the `transport.Transport`
 // interface so shared send-side logic (multipart splitting) can consult the
-// transport's MTU instead of hardcoding `message_frame.max_payload_len`.
+// transport's MTU instead of hardcoding `frame.max_chunk_len`.
 // ---------------------------------------------------------------------------
 
-/// Maximum payload bytes per packet chunk for the AGWPE transport.
-/// Matches `message_frame.max_payload_len` (256): keeps radio transmissions
-/// short and exercises the multipart path. A future raise to 512 would also
-/// require raising `max_payload_len` (the frame backing-array cap).
-pub const mtu_payload: usize = 256;
+/// Operational payload bytes per packet chunk for the AGWPE transport.
+/// Direwolf and modern TNCs accept AX.25 UI info fields up to 512 bytes;
+/// receivers tolerate any chunk up to `frame.max_chunk_len` (1024) regardless
+/// of this value, so mixed-MTU networks interoperate as long as all stations
+/// run a build with the raised ceiling.
+pub const mtu_payload: usize = 512;
 
 const agwpe_transport_vtable: transport.Transport.VTable = .{
     .mtu_payload = mtu_payload,
@@ -692,13 +547,13 @@ const agwpe_transport_vtable: transport.Transport.VTable = .{
 };
 
 fn transportIsConnected(ctx: *anyopaque) bool {
-    const self: *const Connection = @ptrCast(@alignCast(ctx));
+    const self: *Connection = @ptrCast(@alignCast(ctx));
     return self.isConnected();
 }
 
 fn transportSendWire(ctx: *anyopaque, port: u4, call_to: []const u8, wire: []const u8) anyerror!void {
     const self: *Connection = @ptrCast(@alignCast(ctx));
-    return self.sendWireFrame(port, call_to, wire);
+    return self.core.sendWire(port, call_to, wire);
 }
 
 fn transportDrainIncoming(ctx: *anyopaque, dest: []transport.IncomingMessage) usize {
@@ -709,83 +564,4 @@ fn transportDrainIncoming(ctx: *anyopaque, dest: []transport.IncomingMessage) us
 fn transportDisconnect(ctx: *anyopaque) void {
     const self: *Connection = @ptrCast(@alignCast(ctx));
     self.disconnect();
-}
-
-// ---------------------------------------------------------------------------
-// Tests — Connection.drainIncoming FIFO retention
-// ---------------------------------------------------------------------------
-
-test "drainIncoming retains messages beyond dest capacity (FIFO)" {
-    const allocator = std.testing.allocator;
-    var conn: Connection = .{};
-    conn.io = std.testing.io;
-    conn.allocator = allocator;
-    conn.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
-    defer conn.incoming_queue.deinit();
-
-    for (0..20) |i| {
-        var msg: IncomingMessage = .{};
-        msg.port = @intCast(i & 0x0F);
-        try conn.incoming_queue.append(msg);
-    }
-
-    var dest: [8]IncomingMessage = undefined;
-    const n1 = conn.drainIncoming(&dest);
-    try std.testing.expectEqual(@as(usize, 8), n1);
-    try std.testing.expectEqual(@as(usize, 20), conn.incoming_queue.items.len);
-    try std.testing.expectEqual(@as(usize, 8), conn.drain_head);
-    for (dest[0..8], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast(i & 0x0F)), m.port);
-    }
-
-    var dest2: [8]IncomingMessage = undefined;
-    const n2 = conn.drainIncoming(&dest2);
-    try std.testing.expectEqual(@as(usize, 8), n2);
-    try std.testing.expectEqual(@as(usize, 16), conn.drain_head);
-    for (dest2[0..8], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast((8 + i) & 0x0F)), m.port);
-    }
-
-    var dest3: [8]IncomingMessage = undefined;
-    const n3 = conn.drainIncoming(&dest3);
-    try std.testing.expectEqual(@as(usize, 4), n3);
-    try std.testing.expectEqual(@as(usize, 0), conn.drain_head);
-    try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
-    for (dest3[0..4], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast((16 + i) & 0x0F)), m.port);
-    }
-
-    var dest4: [4]IncomingMessage = undefined;
-    try std.testing.expectEqual(@as(usize, 0), conn.drainIncoming(&dest4));
-}
-
-test "drainIncoming drains newly appended messages after a partial drain" {
-    const allocator = std.testing.allocator;
-    var conn: Connection = .{};
-    conn.io = std.testing.io;
-    conn.allocator = allocator;
-    conn.incoming_queue = std.array_list.Managed(IncomingMessage).init(allocator);
-    defer conn.incoming_queue.deinit();
-
-    for (0..5) |i| {
-        var msg: IncomingMessage = .{};
-        msg.port = @intCast(i);
-        try conn.incoming_queue.append(msg);
-    }
-    var dest: [3]IncomingMessage = undefined;
-    try std.testing.expectEqual(@as(usize, 3), conn.drainIncoming(&dest));
-
-    for (5..8) |i| {
-        var msg: IncomingMessage = .{};
-        msg.port = @intCast(i);
-        try conn.incoming_queue.append(msg);
-    }
-
-    var dest2: [10]IncomingMessage = undefined;
-    const n = conn.drainIncoming(&dest2);
-    try std.testing.expectEqual(@as(usize, 5), n);
-    for (dest2[0..5], 0..) |m, i| {
-        try std.testing.expectEqual(@as(u4, @intCast(i + 3)), m.port);
-    }
-    try std.testing.expectEqual(@as(usize, 0), conn.incoming_queue.items.len);
 }

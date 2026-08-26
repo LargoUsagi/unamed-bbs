@@ -10,9 +10,9 @@
 //! `common.chat_history_count`).
 
 const std = @import("std");
-const frame = @import("frame.zig");
+const limits = @import("limits.zig");
 
-const max_payload_len = frame.max_payload_len;
+const max_chunk_len = limits.max_chunk_len;
 
 /// Default number of chat messages the client requests from the BBS.
 pub const default_count: u8 = 20;
@@ -39,7 +39,7 @@ pub const ChatHistoryRequest = struct {
 };
 
 test "chat_history_request encode/decode round trip" {
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = (ChatHistoryRequest{ .count = 20 }).encode(&buf) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(usize, 1), n);
 

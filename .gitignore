@@ -10,3 +10,7 @@ client_store.sqlite
 .vscode/
 
 dist/
+
+# I dont care if you use agents
+# I just dont want your idea of what this file should be
+AGENTS.md

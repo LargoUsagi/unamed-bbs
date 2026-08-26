@@ -11,11 +11,10 @@
 //!   `avatar_len` (u8, 1B, compressed byte count) + `avatar` (compressed)
 
 const std = @import("std");
-const frame = @import("frame.zig");
-const unishox2 = @import("../unishox2.zig");
 const limits = @import("limits.zig");
+const unishox2 = @import("../unishox2.zig");
 
-const max_payload_len = frame.max_payload_len;
+const max_chunk_len = limits.max_chunk_len;
 
 /// A client's request to update its own avatar. The sender is identified by
 /// the signature on the payload (verified against stored public keys), not by
@@ -39,7 +38,7 @@ pub const AvatarUpdate = struct {
         if (compressed.len > 255) return null;
 
         const total = 1 + compressed.len;
-        if (total > max_payload_len) return null;
+        if (total > max_chunk_len) return null;
         if (buf.len < total) return null;
 
         var pos: usize = 0;
@@ -80,7 +79,7 @@ test "avatar_update encode/decode round trip" {
     const avatar_str = "█  █  █\n █ █ █ \n█  █  █";
     const au: AvatarUpdate = .{ .avatar = avatar_str };
 
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = au.encode(&buf) orelse return error.EncodeFailed;
 
     const decoded = (try AvatarUpdate.decode(allocator, buf[0..n])) orelse return error.DecodeFailed;
@@ -90,7 +89,7 @@ test "avatar_update encode/decode round trip" {
 
 test "avatar_update encode rejects avatar > max_avatar_len bytes" {
     const long_avatar = [_]u8{'x'} ** (limits.max_avatar_len + 1);
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     try std.testing.expect((AvatarUpdate{ .avatar = &long_avatar }).encode(&buf) == null);
 }
 
@@ -103,7 +102,7 @@ test "avatar_update decode rejects malformed (too short)" {
 
 test "avatar_update encode/decode with empty avatar" {
     const allocator = std.testing.allocator;
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = (AvatarUpdate{ .avatar = "" }).encode(&buf) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(usize, 1), n);
 

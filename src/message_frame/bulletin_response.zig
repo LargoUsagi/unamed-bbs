@@ -44,11 +44,10 @@
 //! receives the response, making the server the authoritative time source.
 
 const std = @import("std");
-const frame = @import("frame.zig");
-const unishox2 = @import("../unishox2.zig");
 const limits = @import("limits.zig");
+const unishox2 = @import("../unishox2.zig");
 
-const max_encode_len = frame.max_encode_len;
+const max_encode_len = limits.max_encode_len;
 
 /// Maximum value of a `response_id` (the id space is 0..1023).
 pub const max_response_id: u16 = 1023;

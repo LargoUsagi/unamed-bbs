@@ -5,9 +5,9 @@
 //! followed by the 32-byte Ed25519 public key (33 bytes total).
 
 const std = @import("std");
-const frame = @import("frame.zig");
+const limits = @import("limits.zig");
 
-const max_payload_len = frame.max_payload_len;
+const max_chunk_len = limits.max_chunk_len;
 
 /// Role encoded in a `public_key` message (u4, stored in the low nibble of the
 /// first payload byte). Clients mark their key with `.client`; a bulletin
@@ -48,7 +48,7 @@ test "public_key encode/decode round trip (server role)" {
     const pk = [_]u8{0x42} ** 32;
     const payload: PublicKeyPayload = .{ .role = .server, .public_key = pk };
 
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = payload.encode(&buf) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(usize, 33), n);
     try std.testing.expectEqual(@as(u8, 1), buf[0]);
@@ -62,7 +62,7 @@ test "public_key encode/decode round trip (client role)" {
     const pk = [_]u8{0xAB} ** 32;
     const payload: PublicKeyPayload = .{ .role = .client, .public_key = pk };
 
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = payload.encode(&buf) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(u8, 0), buf[0]);
 

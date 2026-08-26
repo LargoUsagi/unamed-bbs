@@ -15,11 +15,10 @@
 //! broadcasting.
 
 const std = @import("std");
-const frame = @import("frame.zig");
-const unishox2 = @import("../unishox2.zig");
 const limits = @import("limits.zig");
+const unishox2 = @import("../unishox2.zig");
 
-const max_encode_len = frame.max_encode_len;
+const max_encode_len = limits.max_encode_len;
 
 /// A single bulletin with title, body, user reference, and creation
 /// timestamp. Both `title` and `body` are plain (uncompressed) text —

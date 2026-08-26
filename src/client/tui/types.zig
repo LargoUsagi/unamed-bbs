@@ -14,6 +14,7 @@ pub const agwpe = @import("bbs").agwpe;
 pub const signing = @import("bbs").signing;
 pub const message_frame = @import("bbs").message_frame;
 pub const transport = @import("bbs").transport;
+pub const messaging = @import("bbs").messaging;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -108,7 +109,7 @@ pub const MsgLogEntry = struct {
     tag: [4]u8 = std.mem.zeroes([4]u8),
     tag_len: u8 = 0,
     /// Originating callsign (if known)
-    callsign: [message_frame.callsign_len]u8 = std.mem.zeroes([message_frame.callsign_len]u8),
+    callsign: [transport.callsign_len]u8 = std.mem.zeroes([transport.callsign_len]u8),
     callsign_len: u8 = 0,
     /// Signature verification result
     sig: SigStatus = .none,
@@ -116,10 +117,10 @@ pub const MsgLogEntry = struct {
     status: MsgLogStatus = .accepted,
 };
 
-/// Returns a 4-byte tag (null-padded) for the message type of an IncomingMessage.
-pub fn msgTypeTag(im: *const transport.IncomingMessage) [4]u8 {
+/// Returns a 4-byte tag (null-padded) for the message type of a session Message.
+pub fn msgTypeTag(msg: *const messaging.Message) [4]u8 {
     var buf: [4]u8 = std.mem.zeroes([4]u8);
-    const tag: []const u8 = if (im.is_message_frame) switch (im.msg_type) {
+    const tag: []const u8 = switch (msg.msg_type) {
         .public_key => "KEY",
         .bulletin_request => "BRQ",
         .bulletin => "BUL",
@@ -142,7 +143,7 @@ pub fn msgTypeTag(im: *const transport.IncomingMessage) [4]u8 {
         .avatar_update => "AVT",
         .user_info_list => "ULS",
         else => "???",
-    } else "RAW";
+    };
     @memcpy(buf[0..tag.len], tag);
     return buf;
 }

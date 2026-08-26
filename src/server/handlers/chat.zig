@@ -7,6 +7,7 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
+const messaging = kiss.messaging;
 const transport = kiss.transport;
 const message_frame = kiss.message_frame;
 
@@ -15,9 +16,9 @@ const ServerCtx = context.ServerCtx;
 
 const outbox = @import("../outbox.zig");
 
-pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
-    const callsign = im.callsign[0..@min(im.callsign_str_len, message_frame.callsign_len)];
-    const payload_bytes = im.frame_payload[0..im.frame_payload_len];
+pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
+    const callsign = msg.callsignSlice();
+    const payload_bytes = msg.payloadSlice();
     const allocator = std.heap.page_allocator;
 
     // A client sends a chat to the BBS. The BBS validates the sender
@@ -44,24 +45,24 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
     if (chat.text.len > message_frame.max_chat_text_len) {
         try ctx.stderr.writeAll("  error: chat text exceeds limit\n");
         try ctx.stderr.flush();
-        outbox.sendChatReject(ctx, im.port, callsign, "Chat text too long.") catch {};
+        outbox.sendChatReject(ctx, msg.port, callsign, "Chat text too long.") catch {};
         return;
     }
 
     // The chat must be signed by the sender. The sender is identified by
     // their signing key, not by callsign — multiple users may share a
     // callsign, so we verify against every registered user's public key.
-    if (!im.signed) {
+    if (!msg.signed) {
         try ctx.stderr.writeAll("  error: chat not signed\n");
         try ctx.stderr.flush();
-        outbox.sendChatReject(ctx, im.port, callsign, "Chat not signed.") catch {};
+        outbox.sendChatReject(ctx, msg.port, callsign, "Chat not signed.") catch {};
         return;
     }
 
-    var user = ctx.store.findUserBySignature(im.signature, payload_bytes) orelse {
+    var user = ctx.store.findUserBySignature(msg.signature, payload_bytes) orelse {
         try ctx.stderr.writeAll("  error: chat signature does not match any registered user (not logged in)\n");
         try ctx.stderr.flush();
-        outbox.sendChatReject(ctx, im.port, callsign, "Not logged into the BBS.") catch {};
+        outbox.sendChatReject(ctx, msg.port, callsign, "Not logged into the BBS.") catch {};
         return;
     };
     defer user.deinit(ctx.store.allocator);
@@ -73,7 +74,7 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
     ctx.store.addChatMessage(now_secs, user.id, chat.text) catch |err| {
         try ctx.stderr.print("  error: failed to store chat: {s}\n", .{@errorName(err)});
         try ctx.stderr.flush();
-        outbox.sendChatReject(ctx, im.port, callsign, "Server error storing chat.") catch {};
+        outbox.sendChatReject(ctx, msg.port, callsign, "Server error storing chat.") catch {};
         return;
     };
 
@@ -90,7 +91,7 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
         .user_id = user.id,
         .text = chat.text,
     } };
-    try outbox.send(ctx, im.port, chat_payload, .chat, .broadcast_all);
+    try outbox.send(ctx, msg.port, chat_payload, .chat, .broadcast_all);
 
     try ctx.stderr.print("  TX chat broadcast epoch={d} user={d}\n", .{ now_secs, user.id });
     try ctx.stderr.flush();

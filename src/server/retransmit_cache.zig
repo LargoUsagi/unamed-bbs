@@ -1,7 +1,7 @@
 //! Retransmission cache for the bulletin server.
 //!
 //! Stores recently sent multipart frames so the server can retransmit a
-//! specific frame via `sendFrameTo` on NAK. 64 entries, 30s TTL, 5s dedup
+//! specific frame via `ServerTransport.sendRaw` on NAK. 64 entries, 30s TTL, 5s dedup
 //! window. The `retransmitObserver` callback is wired into `agwpe.Connection`
 //! send options so every transmitted frame is automatically cached.
 
@@ -11,19 +11,20 @@ const Io = std.Io;
 const kiss = @import("bbs");
 const transport_mod = kiss.transport;
 const message_frame = kiss.message_frame;
+const signing = kiss.signing;
 
 /// Entry in the retransmission cache. Stores per-packet params so the server
-/// can rebuild and retransmit a specific frame via `sendFrameTo` on NAK.
+/// can rebuild and retransmit a specific frame via `ServerTransport.sendRaw` on NAK.
 pub const RetransmitEntry = struct {
     active: bool = false,
     msg_type: message_frame.MessageType = @enumFromInt(0),
     group_id: u4 = 0,
     packet_number: u8 = 0,
     packet_count: u8 = 0,
-    chunk: [message_frame.max_payload_len]u8 = std.mem.zeroes([message_frame.max_payload_len]u8),
+    chunk: [kiss.transport.max_chunk_len]u8 = std.mem.zeroes([kiss.transport.max_chunk_len]u8),
     chunk_len: u16 = 0,
     has_signature: bool = false,
-    signature: [message_frame.signature_len]u8 = std.mem.zeroes([message_frame.signature_len]u8),
+    signature: [signing.signature_len]u8 = std.mem.zeroes([signing.signature_len]u8),
     timestamp: u64 = 0,
     last_retransmit: u64 = 0,
 };
@@ -48,12 +49,12 @@ pub const RetransmissionCache = struct {
                 e.group_id = info.group_id;
                 e.packet_number = info.packet_number;
                 e.packet_count = info.packet_count;
-                const cl = @min(info.chunk.len, message_frame.max_payload_len);
+                const cl = @min(info.chunk.len, kiss.transport.max_chunk_len);
                 @memcpy(e.chunk[0..cl], info.chunk[0..cl]);
                 e.chunk_len = @intCast(cl);
                 e.has_signature = info.signature.len > 0;
                 if (e.has_signature) {
-                    const sl = @min(info.signature.len, message_frame.signature_len);
+                    const sl = @min(info.signature.len, signing.signature_len);
                     @memcpy(e.signature[0..sl], info.signature[0..sl]);
                 }
                 e.timestamp = now;
@@ -97,7 +98,7 @@ test "RetransmissionCache insert and lookup" {
     var cache: RetransmissionCache = .{ .io = io };
 
     const chunk = [_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
-    const sig = [_]u8{0xFE} ** message_frame.signature_len;
+    const sig = [_]u8{0xFE} ** signing.signature_len;
     cache.insertFrame(io, .{
         .msg_type = .bulletin,
         .group_id = 3,

@@ -7,9 +7,9 @@
 //!   `ok` (u8: 0 = failed, 1 = succeeded) + `user_id` (u16 LE) = 3 bytes
 
 const std = @import("std");
-const frame = @import("frame.zig");
+const limits = @import("limits.zig");
 
-const max_payload_len = frame.max_payload_len;
+const max_chunk_len = limits.max_chunk_len;
 
 /// Server response to a `registration` message.
 pub const RegistrationAck = struct {
@@ -38,7 +38,7 @@ pub const RegistrationAck = struct {
 };
 
 test "registration_ack encode/decode round trip (ok)" {
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = (RegistrationAck{ .ok = true, .user_id = 42 }).encode(&buf) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(usize, 3), n);
     try std.testing.expectEqual(@as(u8, 1), buf[0]);
@@ -49,7 +49,7 @@ test "registration_ack encode/decode round trip (ok)" {
 }
 
 test "registration_ack encode/decode round trip (fail)" {
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = (RegistrationAck{ .ok = false, .user_id = 0 }).encode(&buf) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(u8, 0), buf[0]);
 

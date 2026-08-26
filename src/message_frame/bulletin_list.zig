@@ -9,11 +9,10 @@
 //!   per entry: `id` (u32 LE) + `user_id` (u16 LE, 2B) + `title_len` (u8) + `title` (compressed)
 
 const std = @import("std");
-const frame = @import("frame.zig");
-const unishox2 = @import("../unishox2.zig");
 const limits = @import("limits.zig");
+const unishox2 = @import("../unishox2.zig");
 
-const max_encode_len = frame.max_encode_len;
+const max_encode_len = limits.max_encode_len;
 
 /// Metadata for a single bulletin in a paginated list (no body). The `title`
 /// is plain text — the `encode` method compresses it for the wire.

@@ -10,9 +10,10 @@
 //! already cached).
 //!
 //! `TransportPool` holds up to `max_transports` connected transports and
-//! routes outgoing messages based on a `Route` decision: broadcast to all
-//! transports, broadcast to the source transport only, or direct to a single
-//! callsign on the source transport.
+//! fills transmit targets (`fillTargets`) for the shared `bbs.messaging`
+//! `txSend` loop per a `Route` decision: broadcast to all transports,
+//! broadcast to the source transport only, or direct to a single callsign on
+//! the source transport.
 //!
 //! `wrapAgwpe` creates a `ServerTransport` from an `agwpe.Connection` by
 //! calling `conn.asTransport()`. Future meshcore support adds a second
@@ -21,11 +22,11 @@
 const std = @import("std");
 const Io = std.Io;
 
-const kiss = @import("bbs");
-const transport_mod = kiss.transport;
-const agwpe = kiss.agwpe;
-const tcp_mod = kiss.tcp;
-const message_frame = kiss.message_frame;
+const transport_mod = @import("bbs").transport;
+const agwpe = @import("bbs").agwpe;
+const tcp_mod = @import("bbs").tcp;
+const message_frame = @import("bbs").message_frame;
+const messaging = @import("bbs").messaging;
 
 const routing = @import("routing.zig");
 const retransmit_cache_mod = @import("retransmit_cache.zig");
@@ -94,11 +95,18 @@ pub const ServerTransport = struct {
         sig: []const u8,
         opts: transport_mod.SendOptions,
     ) void {
-        const observer = transport_mod.FrameObserver{
+        transport_mod.sendMultipart(self.transport, port, call_to, msg_type, payload, sig, opts, self.cacheObserver()) catch {};
+    }
+
+    /// Frame observer that populates this transport's retransmission cache.
+    /// The returned observer borrows `&self.cache`, whose address is stable
+    /// for as long as the transport occupies its pool slot — safe because
+    /// every transmission through it happens synchronously within one call.
+    pub fn cacheObserver(self: *ServerTransport) transport_mod.FrameObserver {
+        return .{
             .ctx = @ptrCast(&self.cache),
             .observe = retransmit_cache_mod.retransmitObserver,
         };
-        transport_mod.sendMultipart(self.transport, port, call_to, msg_type, payload, sig, opts, observer) catch {};
     }
 
     /// Send without the cache observer. Used for NAK retransmits where the
@@ -130,8 +138,8 @@ pub const DrainedMessage = struct {
     transport_id: TransportId,
 };
 
-/// Holds up to `max_transports` connected transports and routes outgoing
-/// messages based on a `Route` decision.
+/// Holds up to `max_transports` connected transports and fills transmit
+/// targets (`fillTargets`) for `bbs.messaging.txSend` per a `Route` decision.
 pub const TransportPool = struct {
     transports: [max_transports]?ServerTransport = .{null} ** max_transports,
     count: usize = 0,
@@ -153,39 +161,57 @@ pub const TransportPool = struct {
         return null;
     }
 
-    /// Route a signed payload to the appropriate transport(s) based on `route`.
-    /// `source_id` identifies the transport the triggering request arrived on
-    /// (used when `route.radios == .single`). The payload is already encoded
-    /// and signed by the caller.
-    pub fn route(
+    /// Fill `dest` with transmit targets per a `Route` decision, ready for
+    /// `bbs.messaging.txSend`. Broadcast scope (`RadioScope.all`) yields one
+    /// target per connected transport, each on its own configured radio
+    /// channel; single-radio scope yields at most one target on the source
+    /// transport using the given `port` (from the incoming message). Every
+    /// target carries this transport's retransmit-cache observer. Disconnected
+    /// transports are skipped. Returns the filled count.
+    pub fn fillTargets(
         self: *TransportPool,
         decision: Route,
         source_id: TransportId,
         port: u4,
-        msg_type: message_frame.MessageType,
-        payload: []const u8,
-        sig: []const u8,
         opts: transport_mod.SendOptions,
-    ) void {
+        dest: []messaging.TxTarget,
+    ) usize {
         const call_to = decision.callTo();
+        var n: usize = 0;
 
         switch (decision.radios) {
             .all => {
-                // Each transport transmits on its own configured radio channel.
                 for (self.transports[0..self.count]) |*t_opt| {
                     if (t_opt.*) |*t| {
-                        if (t.isConnected()) t.send(t.port, call_to, msg_type, payload, sig, opts);
+                        if (!t.isConnected()) continue;
+                        if (n >= dest.len) break;
+                        dest[n] = .{
+                            .transport = t.transport,
+                            .port = t.port,
+                            .call_to = call_to,
+                            .opts = opts,
+                            .observer = t.cacheObserver(),
+                        };
+                        n += 1;
                     }
                 }
             },
             .single => {
-                // Use the port from the incoming message (matches the source
-                // transport's radio channel).
                 if (self.get(source_id)) |t| {
-                    if (t.isConnected()) t.send(port, call_to, msg_type, payload, sig, opts);
+                    if (t.isConnected() and dest.len > 0) {
+                        dest[0] = .{
+                            .transport = t.transport,
+                            .port = port,
+                            .call_to = call_to,
+                            .opts = opts,
+                            .observer = t.cacheObserver(),
+                        };
+                        n = 1;
+                    }
                 }
             },
         }
+        return n;
     }
 
     /// Drain one incoming message from any connected transport. Returns

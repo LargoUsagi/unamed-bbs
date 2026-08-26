@@ -7,11 +7,10 @@
 //!   `text_len` (u16 LE, 2B) + `text` (compressed)
 
 const std = @import("std");
-const frame = @import("frame.zig");
-const unishox2 = @import("../unishox2.zig");
 const limits = @import("limits.zig");
+const unishox2 = @import("../unishox2.zig");
 
-const max_encode_len = frame.max_encode_len;
+const max_encode_len = limits.max_encode_len;
 
 /// The Message of the Day — plain text (compressed on the wire).
 pub const Motd = struct {

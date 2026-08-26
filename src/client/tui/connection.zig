@@ -103,7 +103,7 @@ pub const ConnectionManager = struct {
                 }
             },
             .tcp => {
-                if (self.tcp_conn_initialized or self.tcp_conn.initialized) {
+                if (self.tcp_conn_initialized or self.tcp_conn.core.initialized) {
                     self.tcp_conn.disconnect();
                 }
             },
@@ -246,7 +246,7 @@ pub fn deinit(mgr: *ConnectionManager) void {
     if (mgr.agwpe_conn_initialized) {
         mgr.conn.deinit();
     }
-    if (mgr.tcp_conn_initialized or mgr.tcp_conn.initialized) {
+    if (mgr.tcp_conn_initialized or mgr.tcp_conn.core.initialized) {
         mgr.tcp_conn.deinit();
     }
     mgr.host_input.deinit();
@@ -373,7 +373,7 @@ fn startTcpConnect(ctx: *AppContext, mgr: *ConnectionManager, callsign: []const 
         return;
     };
 
-    if (mgr.tcp_conn_initialized or mgr.tcp_conn.initialized) {
+    if (mgr.tcp_conn_initialized or mgr.tcp_conn.core.initialized) {
         mgr.tcp_conn.deinit();
         mgr.tcp_conn = .{};
         mgr.tcp_conn_initialized = false;

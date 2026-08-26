@@ -3,6 +3,7 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
+const messaging = kiss.messaging;
 const transport = kiss.transport;
 const message_frame = kiss.message_frame;
 
@@ -11,8 +12,8 @@ const ServerCtx = context.ServerCtx;
 
 const outbox = @import("../outbox.zig");
 
-pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
-    const callsign = im.callsign[0..@min(im.callsign_str_len, message_frame.callsign_len)];
+pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
+    const callsign = msg.callsignSlice();
     try ctx.stderr.print("RX public_key_request from {s}\n", .{callsign});
 
     if (ctx.kp == null) {
@@ -28,7 +29,7 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
 
     // Broadcast to CQ so anyone listening can learn the server key.
     // The outbox handles encoding, signing, and routing.
-    outbox.send(ctx, im.port, pk_payload, .public_key, .broadcast_source) catch |err| {
+    outbox.send(ctx, msg.port, pk_payload, .public_key, .broadcast_source) catch |err| {
         try ctx.stderr.print("  error: failed to broadcast public_key: {s}\n", .{@errorName(err)});
         try ctx.stderr.flush();
         return;

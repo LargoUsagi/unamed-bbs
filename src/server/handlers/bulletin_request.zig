@@ -5,6 +5,7 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
+const messaging = kiss.messaging;
 const transport = kiss.transport;
 const signing = kiss.signing;
 const message_frame = kiss.message_frame;
@@ -14,9 +15,9 @@ const ServerCtx = context.ServerCtx;
 
 const outbox = @import("../outbox.zig");
 
-pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
-    const callsign = im.callsign[0..@min(im.callsign_str_len, message_frame.callsign_len)];
-    const payload_bytes = im.frame_payload[0..im.frame_payload_len];
+pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
+    const callsign = msg.callsignSlice();
+    const payload_bytes = msg.payloadSlice();
     const allocator = std.heap.page_allocator;
 
     try ctx.stderr.print("RX bulletin_request from {s}\n", .{callsign});
@@ -64,7 +65,7 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
             .title = r.title,
             .body = r.body,
         } };
-        outbox.send(ctx, im.port, bul_payload, .bulletin, .broadcast_source) catch {
+        outbox.send(ctx, msg.port, bul_payload, .bulletin, .broadcast_source) catch {
             try ctx.stderr.writeAll("  error: failed to send bulletin\n");
             try ctx.stderr.flush();
             continue;

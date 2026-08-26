@@ -213,9 +213,9 @@ pub fn deriveKeyFromHandleAndPassword(ctx: *AppContext, handle: []const u8, pass
     return true;
 }
 
-fn normalizeCallsign(callsign: []const u8) [message_frame.callsign_len + 1]u8 {
-    var buf: [message_frame.callsign_len + 1]u8 = std.mem.zeroes([message_frame.callsign_len + 1]u8);
-    const n = @min(callsign.len, message_frame.callsign_len);
+fn normalizeCallsign(callsign: []const u8) [types.transport.callsign_len + 1]u8 {
+    var buf: [types.transport.callsign_len + 1]u8 = std.mem.zeroes([types.transport.callsign_len + 1]u8);
+    const n = @min(callsign.len, types.transport.callsign_len);
     for (0..n) |i| buf[i] = std.ascii.toUpper(callsign[i]);
     buf[n] = 0;
     return buf;

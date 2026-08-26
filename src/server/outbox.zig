@@ -1,13 +1,13 @@
 //! Send-side helpers for the bulletin server. Encodes payloads, signs them
-//! with the server key, and routes them through the `TransportPool` based on
-//! a `Route` decision (all-radios/all-clients, single-radio/all-clients, or
-//! single-radio/single-client).
+//! with the server key (delegated to the shared `bbs.messaging`
+//! `preparePayload` core), and routes them through the `TransportPool` based
+//! on a `Route` decision (all-radios/all-clients, single-radio/all-clients,
+//! or single-radio/single-client).
 
 const std = @import("std");
 const Io = std.Io;
 
 const kiss = @import("bbs");
-const signing = kiss.signing;
 const message_frame = kiss.message_frame;
 
 const bulletin_store = @import("bulletin_store.zig");
@@ -17,8 +17,11 @@ const routing = @import("routing.zig");
 const ServerCtx = context.ServerCtx;
 const Route = routing.Route;
 
-/// Encode a `Payload`, sign it (if the server has a key), and route it
-/// through the transport pool according to `route`.
+/// Encode a `Payload`, sign it (if the server has a key), and transmit it
+/// through the transport pool according to `route`. The pool fills the
+/// targets (`fillTargets`) and the shared `txSend` loop transmits. Encode /
+/// sign failures are logged to stderr; per-target wire failures are
+/// intentionally silent — one dead transport must not abort a fan-out.
 pub fn send(
     ctx: *const ServerCtx,
     port: u4,
@@ -26,25 +29,17 @@ pub fn send(
     msg_type: message_frame.MessageType,
     route: Route,
 ) !void {
-    var buf: [message_frame.max_encode_len]u8 = undefined;
-    const n = message_frame.encodePayload(&buf, payload) orelse {
-        try ctx.stderr.writeAll("  error: failed to encode payload\n");
+    var targets: [kiss.messaging.max_tx_targets]kiss.messaging.TxTarget = undefined;
+    const n = ctx.pool.fillTargets(route, ctx.source_transport_id, port, .{}, &targets);
+
+    _ = kiss.messaging.txSend(msg_type, payload, ctx.kp, targets[0..n]) catch |err| {
+        switch (err) {
+            error.EncodeFailed => try ctx.stderr.writeAll("  error: failed to encode payload\n"),
+            error.SignFailed => try ctx.stderr.writeAll("  error: signing failed\n"),
+        }
         try ctx.stderr.flush();
         return;
     };
-    const encoded = buf[0..n];
-
-    var sig_buf: [signing.signature_len]u8 = undefined;
-    const sig: []const u8 = if (ctx.kp) |k| blk: {
-        sig_buf = k.sign(encoded) catch {
-            try ctx.stderr.writeAll("  error: signing failed\n");
-            try ctx.stderr.flush();
-            return;
-        };
-        break :blk &sig_buf;
-    } else &.{};
-
-    ctx.pool.route(route, ctx.source_transport_id, port, msg_type, encoded, sig, .{});
 }
 
 /// Broadcast a `user_info` message for a given user id. Signs the payload
@@ -127,7 +122,8 @@ pub fn sendChatReject(
 }
 
 /// Send a `registration_ack` back to the registering callsign. Always
-/// directed (single radio, single client).
+/// directed (single radio, single client). Encode / sign failures are logged;
+/// wire failures are silent.
 pub fn sendRegistrationAck(
     ctx: *const ServerCtx,
     port: u4,
@@ -139,25 +135,17 @@ pub fn sendRegistrationAck(
         .registration_ack = .{ .ok = ok, .user_id = user_id },
     };
 
-    var buf: [message_frame.max_encode_len]u8 = undefined;
-    const n = message_frame.encodePayload(&buf, ack_payload) orelse {
-        try ctx.stderr.writeAll("  error: failed to encode registration_ack\n");
+    var targets: [kiss.messaging.max_tx_targets]kiss.messaging.TxTarget = undefined;
+    const n = ctx.pool.fillTargets(Route.directed(callsign), ctx.source_transport_id, port, .{}, &targets);
+
+    _ = kiss.messaging.txSend(.registration_ack, ack_payload, ctx.kp, targets[0..n]) catch |err| {
+        switch (err) {
+            error.EncodeFailed => try ctx.stderr.writeAll("  error: failed to encode registration_ack\n"),
+            error.SignFailed => try ctx.stderr.writeAll("  error: signing registration_ack failed\n"),
+        }
         try ctx.stderr.flush();
         return;
     };
-    const encoded = buf[0..n];
-
-    var sig_buf: [signing.signature_len]u8 = undefined;
-    const sig: []const u8 = if (ctx.kp) |k| blk: {
-        sig_buf = k.sign(encoded) catch {
-            try ctx.stderr.writeAll("  error: signing registration_ack failed\n");
-            try ctx.stderr.flush();
-            return;
-        };
-        break :blk &sig_buf;
-    } else &.{};
-
-    ctx.pool.route(Route.directed(callsign), ctx.source_transport_id, port, .registration_ack, encoded, sig, .{});
 
     if (ok) {
         try ctx.stderr.print("  TX registration_ack ok id={d}\n", .{user_id});

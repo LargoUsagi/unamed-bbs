@@ -1,9 +1,9 @@
 //! Type-specific dispatch + payload handlers for incoming server messages.
 //!
 //! The receive mechanics (drain, multipart reassembly, NAK tracking, BBS-key
-//! learning, signature verification) live in `inbox.zig`, which calls the two
-//! `pub` dispatch functions here — `dispatchServerPayload` for single-packet
-//! server messages and `dispatchReassembled` for completed multipart messages.
+//! learning, signature verification) live in `inbox.zig`, which calls the one
+//! `pub` dispatch function here once per complete logical `Message` — whether
+//! it arrived in a single packet or was reassembled by the session core.
 //! This mirrors the server, where `outbox.zig` owns the send mechanics and
 //! handlers call into it; here the inbox owns the receive mechanics and calls
 //! out to these handlers.
@@ -16,16 +16,18 @@ const identity_mod = @import("identity.zig");
 const outbox = @import("outbox.zig");
 const logs = @import("logs.zig");
 
-const transport = types.transport;
 const message_frame = types.message_frame;
+const messaging = types.messaging;
 
 const AppContext = app.AppContext;
 
-/// Dispatch a verified single-packet server payload to the appropriate
-/// store/handler based on message type. Called by the inbox after signature
-/// verification succeeds.
-pub fn dispatchServerPayload(ctx: *AppContext, im: transport.IncomingMessage, payload: []const u8) void {
-    switch (im.msg_type) {
+/// Dispatch a verified server payload to the appropriate store/handler based
+/// on message type. Called by the inbox after signature verification succeeds.
+/// Handles every server-to-client type, regardless of whether it arrived as a
+/// single packet or was reassembled from multipart packets.
+pub fn dispatchServerPayload(ctx: *AppContext, msg: messaging.Message) void {
+    const payload = msg.payloadSlice();
+    switch (msg.msg_type) {
         .bulletin_list => populateBulletins(ctx, payload),
         .bulletin => storeBulletin(ctx, payload),
         .bulletin_response => storeBulletinResponse(ctx, payload),
@@ -34,32 +36,13 @@ pub fn dispatchServerPayload(ctx: *AppContext, im: transport.IncomingMessage, pa
         .user_info => storeUserInfo(ctx, payload),
         .user_info_list => storeUserInfoList(ctx, payload),
         .motd => handleMotd(ctx, payload),
-        .request_status => handleRequestStatus(ctx, im, payload),
+        .request_status => handleRequestStatus(ctx, msg),
         .chat => storeChat(ctx, payload),
         .public_key => {
-            if (im.has_callsign) {
-                identity_mod.storePublicKey(ctx, im.callsign[0..im.callsign_str_len], im.public_key);
+            if (msg.has_callsign and msg.has_public_key) {
+                identity_mod.storePublicKey(ctx, msg.callsignSlice(), msg.public_key);
             }
         },
-        else => {},
-    }
-}
-
-/// Dispatch a reassembled multipart server payload. This is the subset of
-/// message types that can arrive multipart (bulletins, responses, user info,
-/// MOTD, chat); directed single-packet types like `registration_ack` and
-/// `request_status` are handled only via `dispatchServerPayload`. Called by
-/// the inbox after signature verification succeeds on the reassembled payload.
-pub fn dispatchReassembled(ctx: *AppContext, msg_type: message_frame.MessageType, payload: []const u8) void {
-    switch (msg_type) {
-        .bulletin_list => populateBulletins(ctx, payload),
-        .bulletin => storeBulletin(ctx, payload),
-        .bulletin_response => storeBulletinResponse(ctx, payload),
-        .bulletin_response_list => storeBulletinResponseList(ctx, payload),
-        .user_info => storeUserInfo(ctx, payload),
-        .user_info_list => storeUserInfoList(ctx, payload),
-        .motd => handleMotd(ctx, payload),
-        .chat => storeChat(ctx, payload),
         else => {},
     }
 }
@@ -286,18 +269,17 @@ fn handleMotd(ctx: *AppContext, payload: []const u8) void {
     ctx.store.setMotd(m.text) catch {};
 }
 
-fn handleRequestStatus(ctx: *AppContext, im: transport.IncomingMessage, payload: []const u8) void {
+fn handleRequestStatus(ctx: *AppContext, msg: messaging.Message) void {
     // `request_status` is always sent directed to a specific callsign. Only
     // show the popup when the destination matches this client's callsign, so
     // overheard status messages addressed to other stations are ignored.
-    if (im.has_dest_callsign) {
-        const my_callsign = ctx.connection.conn.callsign[0..ctx.connection.conn.callsign_len];
-        const dest = im.dest_callsign[0..im.dest_callsign_str_len];
-        if (!std.ascii.eqlIgnoreCase(my_callsign, dest)) return;
+    if (msg.has_dest_callsign) {
+        const my_callsign = ctx.connection.conn.core.callsign[0..ctx.connection.conn.core.callsign_len];
+        if (!std.ascii.eqlIgnoreCase(my_callsign, msg.destCallsignSlice())) return;
     }
 
     const allocator = std.heap.page_allocator;
-    const decoded = message_frame.decodePayload(allocator, .request_status, payload) catch return;
+    const decoded = message_frame.decodePayload(allocator, .request_status, msg.payloadSlice()) catch return;
     if (decoded == null) return;
     defer message_frame.deinitPayload(allocator, decoded.?);
 

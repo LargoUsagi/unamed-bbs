@@ -1,9 +1,8 @@
 //! Outbox — the client-side send abstraction, mirroring the server's
-//! `outbox.zig`. Owns the send mechanics (encode + sign + transmit) so the
-//! rest of the client code is transport-neutral: type-specific `send*`
-//! functions live here and are invoked by screens and `incoming.zig`,
-//! exactly inverted from how the inbox owns the receive mechanics and calls
-//! out to `incoming.zig` dispatchers.
+//! `outbox.zig`. Owns the send policy (busy flag, precondition checks,
+//! payload lifetime, per-send status reporting) while the shared mechanics —
+//! encode + sign + transmit — live in `bbs.messaging.txSend` over a single
+//! `TxTarget`, the same core the server's outbox drives through its pool.
 //!
 //! The outbox does NOT hold its own transport handle: it reads the inbox's
 //! handle (`ctx.inbox.transport`) since the underlying physical transport is
@@ -18,10 +17,11 @@ const std = @import("std");
 
 const types = @import("types.zig");
 const app = @import("app.zig");
+const bbs = @import("bbs");
 
 const signing = types.signing;
 const message_frame = types.message_frame;
-const transport_mod = @import("bbs").transport;
+const messaging = bbs.messaging;
 const limits = message_frame;
 
 const AppContext = app.AppContext;
@@ -180,82 +180,19 @@ fn freePayloadSlices(payload: message_frame.Payload) void {
     }
 }
 
-/// Sign `encoded` with `kp`, transmit it as `msg_type` via the transport
-/// handle (broadcast to "CQ"), and return a `SendResult` message.
-fn signAndSend(
+/// Map a `txSend` outcome to a `SendResult` for the sent-transmission log.
+/// Error-stage fidelity is preserved: encode/sign failures report unsigned
+/// with their stage name; a total wire failure reports the transport error
+/// name with the post-sign flag.
+fn finishSend(
+    r: messaging.PrepareError!messaging.TxResult,
     args: SendArgs,
-    kp: signing.KeyPair,
-    msg_type: message_frame.MessageType,
-    encoded: []const u8,
     host: [64]u8,
     host_len: u8,
-    input_len: usize,
-    compressed_len: usize,
-) Msg {
-    const sig = kp.sign(encoded) catch return .{ .send_done = .{
-        .ok = false,
-        .input_len = input_len,
-        .compressed_len = compressed_len,
-        .err = "SignFailed",
-        .host = host,
-        .host_len = host_len,
-        .port = args.port,
-        .kport = args.kport,
-    } };
-    transport_mod.sendMultipart(args.transport, args.kport, "CQ", msg_type, encoded, &sig, args.send_options, null) catch |err| return .{ .send_done = .{
-        .ok = false,
-        .input_len = input_len,
-        .compressed_len = compressed_len,
-        .err = @errorName(err),
-        .host = host,
-        .host_len = host_len,
-        .port = args.port,
-        .kport = args.kport,
-        .signed = true,
-    } };
-    return .{ .send_done = .{
-        .ok = true,
-        .input_len = input_len,
-        .compressed_len = compressed_len,
-        .host = host,
-        .host_len = host_len,
-        .port = args.port,
-        .kport = args.kport,
-        .signed = true,
-    } };
-}
-
-/// Background send task: encode the payload, sign it, and transmit via the
-/// transport handle. For `registration`, the public key is injected from the
-/// keypair. All payload types are encoded directly.
-fn sendTask(args: SendArgs) ?Msg {
-    defer std.heap.page_allocator.free(args.host);
-    defer freePayloadSlices(args.payload);
-
-    const host = copyHost(args.host);
-    const host_len: u8 = @intCast(@min(args.host.len, 64));
-
-    var buf: [message_frame.max_encode_len]u8 = undefined;
-    const msg_type: message_frame.MessageType = @as(message_frame.MessageType, args.payload);
-
-    // `public_key_request` is the one unsigned request — the server
-    // broadcasts its key to anyone who asks, no signature verification. So
-    // skip key reconstruction / signing entirely and send an all-zero
-    // signature on the wire. This lets a client with no derived signing key
-    // request the server key (the bootstrap path before registration).
-    if (args.payload == .public_key_request) {
-        const n = message_frame.encodePayload(&buf, args.payload) orelse return .{ .send_done = .{
-            .ok = false,
-            .input_len = args.input_len,
-            .compressed_len = 0,
-            .err = "EncodeFailed",
-            .host = host,
-            .host_len = host_len,
-            .port = args.port,
-            .kport = args.kport,
-        } };
-        const zero_sig = [_]u8{0} ** signing.signature_len;
-        transport_mod.sendMultipart(args.transport, args.kport, "CQ", msg_type, buf[0..n], &zero_sig, args.send_options, null) catch |err| return .{ .send_done = .{
+    success_signed: bool,
+) SendResult {
+    const result = r catch |err| {
+        return .{
             .ok = false,
             .input_len = args.input_len,
             .compressed_len = 0,
@@ -264,18 +201,58 @@ fn sendTask(args: SendArgs) ?Msg {
             .host_len = host_len,
             .port = args.port,
             .kport = args.kport,
-            .signed = false,
-        } };
-        return .{ .send_done = .{
-            .ok = true,
+        };
+    };
+    if (!result.ok()) {
+        return .{
+            .ok = false,
             .input_len = args.input_len,
             .compressed_len = 0,
+            .err = if (result.first_error) |e| @errorName(e) else "NoTarget",
             .host = host,
             .host_len = host_len,
             .port = args.port,
             .kport = args.kport,
-            .signed = false,
-        } };
+            .signed = success_signed,
+        };
+    }
+    return .{
+        .ok = true,
+        .input_len = args.input_len,
+        .compressed_len = 0,
+        .host = host,
+        .host_len = host_len,
+        .port = args.port,
+        .kport = args.kport,
+        .signed = success_signed,
+    };
+}
+
+/// Background send task: delegate encode + sign + transmit to the shared
+/// `messaging.txSend` core over the single transport target. For
+/// `registration`, the public key is injected from the keypair. For
+/// `public_key_request` (the one unsigned request in the protocol), no key is
+/// passed and an all-zero signature is sent on the wire — this lets a client
+/// with no derived signing key request the server key (the bootstrap path
+/// before registration).
+fn sendTask(args: SendArgs) ?Msg {
+    defer std.heap.page_allocator.free(args.host);
+    defer freePayloadSlices(args.payload);
+
+    const host = copyHost(args.host);
+    const host_len: u8 = @intCast(@min(args.host.len, 64));
+    const msg_type: message_frame.MessageType = @as(message_frame.MessageType, args.payload);
+
+    const targets = [_]messaging.TxTarget{.{
+        .transport = args.transport,
+        .port = args.kport,
+        .call_to = "CQ",
+        .opts = args.send_options,
+    }};
+
+    if (args.payload == .public_key_request) {
+        const r = messaging.txSend(msg_type, args.payload, null, &targets);
+        return .{ .send_done = finishSend(r, args, host, host_len, false) };
     }
 
     const kp = signing.KeyPair.fromSecretKeyBytes(args.secret_key) catch return .{ .send_done = .{
@@ -289,37 +266,16 @@ fn sendTask(args: SendArgs) ?Msg {
         .kport = args.kport,
     } };
 
-    // For registration, the public key comes from the keypair (not in the payload).
-    if (args.payload == .registration) {
-        const pk_bytes = kp.publicKeyBytes();
-        const n = message_frame.encodePayload(&buf, .{ .registration = .{
+    const payload = if (args.payload == .registration)
+        message_frame.Payload{ .registration = .{
             .handle = args.payload.registration.handle,
-            .public_key = pk_bytes,
-        } }) orelse return .{ .send_done = .{
-            .ok = false,
-            .input_len = args.input_len,
-            .compressed_len = 0,
-            .err = "EncodeFailed",
-            .host = host,
-            .host_len = host_len,
-            .port = args.port,
-            .kport = args.kport,
-        } };
-        return signAndSend(args, kp, .registration, buf[0..n], host, host_len, args.input_len, 0);
-    }
+            .public_key = kp.publicKeyBytes(),
+        } }
+    else
+        args.payload;
 
-    // All other payload types: encode directly.
-    const n = message_frame.encodePayload(&buf, args.payload) orelse return .{ .send_done = .{
-        .ok = false,
-        .input_len = args.input_len,
-        .compressed_len = 0,
-        .err = "EncodeFailed",
-        .host = host,
-        .host_len = host_len,
-        .port = args.port,
-        .kport = args.kport,
-    } };
-    return signAndSend(args, kp, msg_type, buf[0..n], host, host_len, args.input_len, 0);
+    const r = messaging.txSend(msg_type, payload, kp, &targets);
+    return .{ .send_done = finishSend(r, args, host, host_len, true) };
 }
 
 // ---------------------------------------------------------------------------

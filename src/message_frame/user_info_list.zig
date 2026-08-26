@@ -13,10 +13,10 @@
 //!   `count` (u8) + per entry: `entry_len` (u16 LE) + <UserInfo bytes>
 
 const std = @import("std");
-const frame = @import("frame.zig");
+const limits = @import("limits.zig");
 const user_info = @import("user_info.zig");
 
-const max_encode_len = frame.max_encode_len;
+const max_encode_len = limits.max_encode_len;
 
 const UserInfo = user_info.UserInfo;
 

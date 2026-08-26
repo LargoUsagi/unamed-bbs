@@ -12,10 +12,16 @@
 //! collect and concatenate by frame ID.
 
 const std = @import("std");
-const message_frame = @import("../message_frame.zig");
 
-const MessageType = message_frame.MessageType;
-const IncomingMessage = message_frame.IncomingMessage;
+const incoming_mod = @import("incoming.zig");
+const frame = @import("frame.zig");
+const message_type = @import("../message_frame/message_type.zig");
+
+const MessageType = message_type.MessageType;
+const IncomingMessage = incoming_mod.IncomingMessage;
+const callsign_len = incoming_mod.callsign_len;
+const signature_len = frame.signature_len;
+const max_packets_per_message = frame.max_packets_per_message;
 
 /// Maximum concurrent reassembly groups (the u4 group_id space is 0–15).
 pub const max_groups: usize = 16;
@@ -23,17 +29,17 @@ pub const max_groups: usize = 16;
 /// One in-progress multipart reassembly, keyed by (source_callsign, group_id).
 pub const Entry = struct {
     active: bool = false,
-    source_callsign: [message_frame.callsign_len]u8 = std.mem.zeroes([message_frame.callsign_len]u8),
+    source_callsign: [callsign_len]u8 = std.mem.zeroes([callsign_len]u8),
     callsign_len: u8 = 0,
     group_id: u4 = 0,
     msg_type: MessageType = @enumFromInt(0),
     packet_count: u8 = 0,
-    signature: [message_frame.signature_len]u8 = std.mem.zeroes([message_frame.signature_len]u8),
+    signature: [signature_len]u8 = std.mem.zeroes([signature_len]u8),
     has_signature: bool = false,
     /// Payload chunks indexed by `packet_number` (u8 → 0..255). Each slot
     /// holds a heap-allocated slice of whatever length the sender emitted;
     /// null until that packet has been received.
-    packets: [message_frame.max_packets_per_message]?[]u8 = @splat(null),
+    packets: [max_packets_per_message]?[]u8 = @splat(null),
     received_count: u8 = 0,
     last_received_ts: u64 = 0,
 
@@ -47,16 +53,15 @@ pub const Entry = struct {
 };
 
 /// The reassembled payload returned to the caller when all packets arrive.
-/// `payload` is heap-allocated; the **caller owns it and must free it**
-/// (e.g. with `std.heap.page_allocator.free(msg.payload)`).
+/// `payload` is heap-allocated; release it with `Reassembler.freePayload`.
 pub const ReassembledMsg = struct {
     msg_type: MessageType,
     group_id: u4,
     /// Copied from the entry so it remains valid after the entry is reset.
-    callsign: [message_frame.callsign_len]u8 = std.mem.zeroes([message_frame.callsign_len]u8),
+    callsign: [callsign_len]u8 = std.mem.zeroes([callsign_len]u8),
     callsign_len: u8 = 0,
-    signature: ?[message_frame.signature_len]u8 = null,
-    /// Heap-allocated, caller-owned.
+    signature: ?[signature_len]u8 = null,
+    /// Heap-allocated; ownership passes to the caller.
     payload: []u8,
 };
 
@@ -71,7 +76,7 @@ pub const Reassembler = struct {
     /// more packets are still needed (or on error/overflow).
     pub fn feed(self: *Reassembler, im: IncomingMessage, now_ms: u64) ?ReassembledMsg {
         if (!im.has_callsign) return null;
-        const callsign = im.callsign[0..@min(im.callsign_str_len, message_frame.callsign_len)];
+        const callsign = im.callsign[0..@min(im.callsign_str_len, callsign_len)];
 
         const entry = self.findOrCreate(callsign, im.group_id) orelse return null;
 
@@ -82,7 +87,7 @@ pub const Reassembler = struct {
         }
 
         const pn = im.packet_number;
-        if (pn >= message_frame.max_packets_per_message) return null;
+        if (pn >= max_packets_per_message) return null;
         if (entry.packets[pn] != null) return null; // already have this packet
 
         // Store the payload chunk (any length the sender chose).
@@ -128,6 +133,12 @@ pub const Reassembler = struct {
         entry.next_nak_ts = 0;
     }
 
+    /// Free a reassembled payload returned by `feed`. Convenience wrapper so
+    /// callers above the session core never touch the allocator directly.
+    pub fn freePayload(payload: []u8) void {
+        std.heap.page_allocator.free(payload);
+    }
+
     fn findOrCreate(self: *Reassembler, callsign: []const u8, group_id: u4) ?*Entry {
         // Try to find an existing entry.
         for (&self.entries) |*e| {
@@ -142,7 +153,7 @@ pub const Reassembler = struct {
             if (!e.active) {
                 e.* = .{ .active = true };
                 e.group_id = group_id;
-                e.callsign_len = @intCast(@min(callsign.len, message_frame.callsign_len));
+                e.callsign_len = @intCast(@min(callsign.len, callsign_len));
                 @memcpy(e.source_callsign[0..e.callsign_len], callsign[0..e.callsign_len]);
                 return e;
             }
@@ -176,10 +187,10 @@ pub const Reassembler = struct {
         // Snapshot metadata before resetting the entry.
         const msg_type = entry.msg_type;
         const group_id = entry.group_id;
-        const sig: ?[message_frame.signature_len]u8 = if (entry.has_signature) entry.signature else null;
-        var callsign: [message_frame.callsign_len]u8 = std.mem.zeroes([message_frame.callsign_len]u8);
-        const callsign_len = entry.callsign_len;
-        @memcpy(callsign[0..callsign_len], entry.source_callsign[0..callsign_len]);
+        const sig: ?[signature_len]u8 = if (entry.has_signature) entry.signature else null;
+        var callsign: [callsign_len]u8 = std.mem.zeroes([callsign_len]u8);
+        const cs_len: u8 = entry.callsign_len;
+        @memcpy(callsign[0..cs_len], entry.source_callsign[0..cs_len]);
 
         self.freeEntry(entry);
 
@@ -187,7 +198,7 @@ pub const Reassembler = struct {
             .msg_type = msg_type,
             .group_id = group_id,
             .callsign = callsign,
-            .callsign_len = callsign_len,
+            .callsign_len = cs_len,
             .signature = sig,
             .payload = reassembled,
         };
@@ -208,13 +219,13 @@ fn makePacket(
     pn: u8,
     packet_count: u8,
     chunk: []const u8,
-    sig: [message_frame.signature_len]u8,
+    sig: [signature_len]u8,
 ) IncomingMessage {
     var im: IncomingMessage = .{};
     im.is_message_frame = true;
     im.msg_type = .bulletin;
     im.has_callsign = true;
-    im.callsign = std.mem.zeroes([message_frame.callsign_len]u8);
+    im.callsign = std.mem.zeroes([callsign_len]u8);
     im.callsign[0] = 'S';
     im.callsign[1] = 'R';
     im.callsign[2] = 'V';
@@ -246,11 +257,11 @@ test "Reassembler: 10 multipart messages (group_id=0) drained 16 packets per tic
     const full_len: usize = chunk_size * (packets_per_msg - 1) + 100; // 4*256 + 100 = 1124
     var full_payloads: [10][]u8 = undefined;
     var chunks: [50][]u8 = undefined;
-    var sigs: [10][message_frame.signature_len]u8 = undefined;
+    var sigs: [10][signature_len]u8 = undefined;
     for (0..n_msgs) |m| {
         full_payloads[m] = try allocator.alloc(u8, full_len);
         @memset(full_payloads[m], @intCast((m + 1) % 256));
-        sigs[m] = .{0} ** message_frame.signature_len;
+        sigs[m] = .{0} ** signature_len;
         sigs[m][0] = @intCast(m + 1); // distinguish signatures
         for (0..packets_per_msg) |p| {
             const start = p * chunk_size;
@@ -314,11 +325,11 @@ test "Reassembler: straddled message completes on the next drain batch" {
     const pp: u8 = 3;
     var full: [3][]u8 = undefined;
     var chunks: [9][]u8 = undefined;
-    var sigs: [3][message_frame.signature_len]u8 = undefined;
+    var sigs: [3][signature_len]u8 = undefined;
     for (0..n_msgs) |m| {
         full[m] = try allocator.alloc(u8, 700); // 3 chunks: 256+256+188
         @memset(full[m], @intCast((m + 1) % 256));
-        sigs[m] = .{0} ** message_frame.signature_len;
+        sigs[m] = .{0} ** signature_len;
         sigs[m][0] = @intCast(m + 100);
         for (0..pp) |p| {
             const s = p * 256;
@@ -350,4 +361,26 @@ test "Reassembler: straddled message completes on the next drain batch" {
         i = end;
     }
     try testing.expectEqual(@as(usize, 3), completed);
+}
+
+test "Reassembler concatenates mixed-size chunks (MTU-agnostic)" {
+    var reassembler: Reassembler = .{};
+    const sig = [_]u8{0x71} ** signature_len;
+
+    var c0: [1000]u8 = @splat('A');
+    const c1 = "tail!";
+
+    var im0 = makePacket(0, 2, &c0, sig);
+    im0.group_id = 9;
+    var im1 = makePacket(1, 2, c1, sig);
+    im1.group_id = 9;
+
+    try testing.expect(reassembler.feed(im0, 1000) == null);
+    const msg = reassembler.feed(im1, 1100) orelse return error.Incomplete;
+
+    defer Reassembler.freePayload(msg.payload);
+    try testing.expectEqual(@as(usize, c0.len + c1.len), msg.payload.len);
+    for (msg.payload[0..c0.len]) |b| try testing.expectEqual(@as(u8, 'A'), b);
+    try testing.expectEqualSlices(u8, c1, msg.payload[c0.len..]);
+    try testing.expectEqual(sig, msg.signature.?);
 }

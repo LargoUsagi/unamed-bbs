@@ -9,7 +9,7 @@
 const std = @import("std");
 
 const types = @import("types.zig");
-const transport = types.transport;
+const messaging = types.messaging;
 
 const SigStatus = types.SigStatus;
 
@@ -18,7 +18,7 @@ const SigStatus = types.SigStatus;
 /// `settings.zig` and `chat.zig` read them for rendering.
 pub const RingBuffers = struct {
     // --- Incoming message buffer ---
-    incoming: [types.max_incoming]transport.IncomingMessage = undefined,
+    incoming: [types.max_incoming]messaging.Message = undefined,
     incoming_count: usize = 0,
     sig_statuses: [types.max_incoming]SigStatus = .{.none} ** types.max_incoming,
 

@@ -12,11 +12,10 @@
 //!   `handle_len` (u8, compressed byte count) + `handle` (compressed) + `public_key` (32B)
 
 const std = @import("std");
-const frame = @import("frame.zig");
-const unishox2 = @import("../unishox2.zig");
 const limits = @import("limits.zig");
+const unishox2 = @import("../unishox2.zig");
 
-const max_payload_len = frame.max_payload_len;
+const max_chunk_len = limits.max_chunk_len;
 pub const public_key_len: usize = 32;
 
 /// A registration request sent by a client to the BBS. The callsign is not
@@ -41,7 +40,7 @@ pub const Registration = struct {
         if (compressed.len > 255) return null;
 
         const total = 1 + compressed.len + public_key_len;
-        if (total > max_payload_len) return null;
+        if (total > max_chunk_len) return null;
         if (buf.len < total) return null;
 
         var pos: usize = 0;
@@ -91,7 +90,7 @@ test "registration encode/decode round trip" {
         .public_key = pk,
     };
 
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = reg.encode(&buf) orelse return error.EncodeFailed;
 
     const decoded = (try Registration.decode(allocator, buf[0..n])) orelse return error.DecodeFailed;
@@ -102,7 +101,7 @@ test "registration encode/decode round trip" {
 
 test "registration encode rejects handle > max_handle_len bytes" {
     const long_handle = [_]u8{'x'} ** (limits.max_handle_len + 1);
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     try std.testing.expect((Registration{
         .handle = &long_handle,
         .public_key = [_]u8{0} ** 32,
@@ -118,7 +117,7 @@ test "registration decode rejects malformed (too short)" {
 
 test "registration encode/decode with empty handle" {
     const allocator = std.testing.allocator;
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = (Registration{
         .handle = "",
         .public_key = [_]u8{0x55} ** 32,

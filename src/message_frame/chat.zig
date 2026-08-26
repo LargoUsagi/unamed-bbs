@@ -23,11 +23,10 @@
 //! compression (see `common.max_chat_text_len`).
 
 const std = @import("std");
-const frame = @import("frame.zig");
-const unishox2 = @import("../unishox2.zig");
 const limits = @import("limits.zig");
+const unishox2 = @import("../unishox2.zig");
 
-const max_encode_len = frame.max_encode_len;
+const max_encode_len = limits.max_encode_len;
 
 /// Maximum chat text length in characters (client-side limit, before
 /// compression). The TUI input is capped to this value. Re-exported from

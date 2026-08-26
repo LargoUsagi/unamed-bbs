@@ -5,8 +5,12 @@
 //! can import shared code through this module instead of reaching outside
 //! their own module path with `../`.
 //!
-//! The AGWPE link layer, transport abstraction, and multipart reassembly
-//! live under `src/transport/` and are re-exported below.
+//! Layer map (dependencies point downward only):
+//!   * `message_frame` — typed application payloads + wire size limits
+//!   * `transport.frame` / `transport.incoming` — packetization wire format
+//!   * `transport.transport` — link-agnostic `Transport` vtable + splitting
+//!   * `transport.messaging` — sessions: sign, fan-out, reassembly
+//!   * `transport.agwpe` / `transport.tcp` — concrete link implementations
 
 const std = @import("std");
 const Io = std.Io;
@@ -16,6 +20,7 @@ pub const tcp = @import("transport/tcp.zig");
 pub const transport = @import("transport/transport.zig");
 pub const endpoint = @import("transport/endpoint.zig");
 pub const reassembly = @import("transport/reassembly.zig");
+pub const messaging = @import("transport/messaging.zig");
 pub const signing = @import("signing.zig");
 pub const message_frame = @import("message_frame.zig");
 pub const store = @import("store.zig");
@@ -31,8 +36,11 @@ test {
     _ = @import("transport/agwpe.zig");
     _ = @import("transport/tcp.zig");
     _ = @import("transport/transport.zig");
+    _ = @import("transport/frame.zig");
+    _ = @import("transport/incoming.zig");
     _ = @import("transport/endpoint.zig");
     _ = @import("transport/reassembly.zig");
+    _ = @import("transport/messaging.zig");
     _ = @import("signing.zig");
     _ = @import("message_frame.zig");
     _ = @import("store.zig");

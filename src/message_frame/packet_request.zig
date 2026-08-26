@@ -13,9 +13,9 @@
 //! (byte 1, bits [5:2]), not in the payload.
 
 const std = @import("std");
-const frame = @import("frame.zig");
+const limits = @import("limits.zig");
 
-const max_payload_len = frame.max_payload_len;
+const max_chunk_len = limits.max_chunk_len;
 
 /// A request to retransmit specific missing packets of a multipart message.
 /// The `group_id` is carried in the MessageFrame header, not in this struct.
@@ -24,12 +24,12 @@ pub const PacketRequest = struct {
     packet_numbers: []const u8,
 
     /// Serialize into `buf`. Returns the number of bytes written, or `null` if
-    /// the packet list is empty or exceeds `max_payload_len`.
+    /// the packet list is empty or exceeds `max_chunk_len`.
     pub fn encode(self: PacketRequest, buf: []u8) ?usize {
         if (self.packet_numbers.len == 0) return null;
         if (self.packet_numbers.len > 255) return null;
         const needed = 1 + self.packet_numbers.len;
-        if (needed > max_payload_len) return null;
+        if (needed > max_chunk_len) return null;
         if (buf.len < needed) return null;
         buf[0] = @intCast(self.packet_numbers.len);
         @memcpy(buf[1 .. 1 + self.packet_numbers.len], self.packet_numbers);
@@ -56,7 +56,7 @@ pub const PacketRequest = struct {
 test "packet_request encode/decode round trip" {
     const allocator = std.testing.allocator;
     const missing = [_]u8{ 2, 5, 7 };
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     const n = (PacketRequest{ .packet_numbers = &missing }).encode(&buf) orelse return error.EncodeFailed;
     try std.testing.expectEqual(@as(usize, 4), n);
 
@@ -69,7 +69,7 @@ test "packet_request encode/decode round trip" {
 }
 
 test "packet_request encode rejects empty list" {
-    var buf: [max_payload_len]u8 = undefined;
+    var buf: [max_chunk_len]u8 = undefined;
     try std.testing.expect((PacketRequest{ .packet_numbers = &.{} }).encode(&buf) == null);
 }
 

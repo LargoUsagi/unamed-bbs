@@ -7,6 +7,7 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
+const messaging = kiss.messaging;
 const transport = kiss.transport;
 const signing = kiss.signing;
 const message_frame = kiss.message_frame;
@@ -17,9 +18,9 @@ const ServerCtx = context.ServerCtx;
 
 const outbox = @import("../outbox.zig");
 
-pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
-    const callsign = im.callsign[0..@min(im.callsign_str_len, message_frame.callsign_len)];
-    const payload_bytes = im.frame_payload[0..im.frame_payload_len];
+pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
+    const callsign = msg.callsignSlice();
+    const payload_bytes = msg.payloadSlice();
     // The store's allocator owns the per-user handle/callsign/avatar slices
     // returned by getUserById, so all lookup allocations and their deinit must
     // go through it (freeing them with a different allocator misaligns and
@@ -89,7 +90,7 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
     var check_buf: [message_frame.max_encode_len]u8 = undefined;
     const list = message_frame.UserInfoList{ .users = infos };
     if (list.encode(&check_buf)) |_| {
-        outbox.send(ctx, im.port, .{ .user_info_list = .{ .users = infos } }, .user_info_list, .broadcast_source) catch {
+        outbox.send(ctx, msg.port, .{ .user_info_list = .{ .users = infos } }, .user_info_list, .broadcast_source) catch {
             try ctx.stderr.writeAll("  error: failed to send user_info_list\n");
             try ctx.stderr.flush();
             return;
@@ -100,7 +101,7 @@ pub fn handle(ctx: *const ServerCtx, im: transport.IncomingMessage) !void {
         try ctx.stderr.print("  user_info_list too large, falling back to per-user ({d} users)\n", .{found});
         try ctx.stderr.flush();
         for (lookups[0..found]) |u| {
-            outbox.broadcastUserInfo(ctx, im.port, u.id, .broadcast_source) catch {
+            outbox.broadcastUserInfo(ctx, msg.port, u.id, .broadcast_source) catch {
                 try ctx.stderr.print("  error: failed to broadcast user_info for id={d}\n", .{u.id});
                 try ctx.stderr.flush();
             };
