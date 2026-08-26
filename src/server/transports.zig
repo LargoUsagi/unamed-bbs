@@ -41,7 +41,7 @@ const RetransmissionCache = retransmit_cache_mod.RetransmissionCache;
 
 /// Maximum number of simultaneously connected transports. With TCP listeners
 /// each accepted client occupies a slot, so this is larger than the original 4.
-pub const max_transports: usize = 16;
+pub const max_transports: usize = 32;
 
 /// Identifies the role of a transport in the server's connection pool.
 /// Used by the cleanup loop in `main.zig` to distinguish dynamically-accepted

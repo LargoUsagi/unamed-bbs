@@ -1,7 +1,10 @@
 //! Handler for `registration` — registers or re-registers a user (handle,
-//! callsign, public key) in the store. Verifies the signature against either
-//! the existing stored key (re-registration) or the payload key (new
-//! registration), persists the store, and broadcasts the updated user info.
+//! public key, and — when the link provides a genuine HAM callsign —
+//! callsign) in the store. Verifies the signature against either the existing
+//! stored key (re-registration) or the payload key (new registration),
+//! persists the store, and broadcasts the updated user info. The callsign
+//! field stores only a HAM radio callsign (never a routing/link identity), so
+//! identity-less links like MeshCore register with an empty callsign.
 
 const std = @import("std");
 
@@ -45,15 +48,13 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
         return;
     }
 
-    // The callsign comes exclusively from the AX.25 header — it is
-    // not carried in the payload (so it can't be forged by the
-    // sender). Reject registrations with no header callsign.
-    if (callsign.len == 0) {
-        try ctx.stderr.writeAll("  error: registration has no header callsign\n");
-        try ctx.stderr.flush();
-        outbox.sendRegistrationAck(ctx, msg.port, callsign, false, 0) catch {};
-        return;
-    }
+    // The callsign comes from the link-layer header (AX.25 for HAM radio
+    // links) — it is not carried in the payload, so it can't be forged by the
+    // sender. The User.callsign field stores ONLY a genuine HAM radio
+    // callsign; it is not used for routing. Identity-less links (e.g.
+    // MeshCore) surface no callsign, so their registrations are accepted with
+    // an empty callsign (new user) or preserve an existing HAM callsign set
+    // during a prior HAM-radio session (re-registration).
     const cs = callsign;
 
     // The registration payload must be signed. Which key it must be
@@ -95,9 +96,12 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
 
         // Authorized by the current owner — apply the update. The avatar is
         // preserved across re-registration (the user may have customized it);
-        // only callsign/key/datetime are refreshed.
+        // only callsign/key/datetime are refreshed. A HAM callsign set during
+        // a prior HAM-radio session is preserved when re-registering over an
+        // identity-less link (which surfaces no callsign).
+        const stored_cs = if (cs.len != 0) cs else existing.callsign;
         const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
-        ctx.store.updateUser(existing.id, cs, reg.public_key, now_secs, existing.is_sysop, existing.avatar) catch |err| {
+        ctx.store.updateUser(existing.id, stored_cs, reg.public_key, now_secs, existing.is_sysop, existing.avatar) catch |err| {
             try ctx.stderr.print("  error: failed to update user: {s}\n", .{@errorName(err)});
             try ctx.stderr.flush();
             outbox.sendRegistrationAck(ctx, msg.port, callsign, false, 0) catch {};
@@ -109,7 +113,7 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
         };
 
         try ctx.stderr.print("  updated: handle=\"{s}\" callsign=\"{s}\" id={d}\n", .{
-            reg.handle, cs, existing.id,
+            reg.handle, stored_cs, existing.id,
         });
         try ctx.stderr.flush();
 

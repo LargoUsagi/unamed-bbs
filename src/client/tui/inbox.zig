@@ -186,11 +186,13 @@ pub const Inbox = struct {
 
     /// RxCore packet hook — the sanctioned raw-packet view for radio-link
     /// policy. Tracks overheard NAK requests from other stations so the NAK
-    /// controller can back off when someone else already asked.
+    /// controller can back off when someone else already asked. Callsigns are
+    /// optional (identity-less links like MeshCore surface none), so the
+    /// guard does not require one — `trackOverheardNak` keys by group_id.
     fn rxPacket(opaque_ctx: *anyopaque, im: *const transport.IncomingMessage) void {
         const ctx: *AppContext = @ptrCast(@alignCast(opaque_ctx));
 
-        if (im.is_message_frame and im.msg_type == .packet_request and im.has_callsign) {
+        if (im.is_message_frame and im.msg_type == .packet_request) {
             trackOverheardNak(ctx, im);
         }
     }

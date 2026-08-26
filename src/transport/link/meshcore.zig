@@ -77,13 +77,13 @@ pub const default_baud: u32 = 115200;
 /// RADIO PUBLIC KEY (the Ed25519 identity companion firmware generates and
 /// reports in its SELF_INFO frame), prepended to every transmitted radio
 /// payload. RAW_CUSTOM packets carry no on-air sender identity, so this tag
-/// is the only station identifier a receiver has; it is rendered as uppercase
-/// hex (8 chars) and surfaces as the session-layer callsign — spoofable like
-/// an AX.25 callsign, which is the existing trust model.
+/// is the only station identifier a receiver has on the air. It is NOT a
+/// HAM callsign — it is a link-local identity token used only to address
+/// this station's own transmissions. The session layer is given no callsign
+/// for MeshCore (callsigns are reserved for genuine AX.25/HAM identity), so
+/// the multipart reassembler keys MeshCore traffic by group_id alone (the
+/// documented identity-less path in `reassembly.zig`).
 pub const identity_tag_len: usize = 4;
-
-/// Length of the hex-rendered identity callsign.
-pub const identity_callsign_len: usize = 2 * identity_tag_len;
 
 /// Transmit sequence number: one byte that walks through all 256 values
 /// across consecutive transmissions on this link. Companion firmware dedups
@@ -104,15 +104,6 @@ const self_info_min_len: usize = 1 + 3 + 32; // type + adv/tx/max + pubkey
 /// MeshCore header/path): identity tag + transmit sequence.
 const radio_overhead_len: usize = identity_tag_len + tx_seq_len;
 
-/// Render a raw identity tag as uppercase hex callsign characters.
-fn identityHex(buf: *[identity_callsign_len]u8, tag: [identity_tag_len]u8) []const u8 {
-    const hex = "0123456789ABCDEF";
-    for (tag, 0..) |b, i| {
-        buf[i * 2] = hex[b >> 4];
-        buf[i * 2 + 1] = hex[b & 0x0F];
-    }
-    return buf;
-}
 
 // --- Companion protocol codes ---------------------------------------------
 
@@ -443,19 +434,15 @@ fn onFrame(conn: *Connection, frame: []const u8) void {
     if (frame[0] != PUSH_CODE_RAW_DATA) return;
 
     // Raw push body: [snr][rssi][reserved][identity_tag][tx_seq][frame…].
-    // The tag (first bytes of the sender's radio public key) renders as the
-    // session-layer callsign; the sequence byte is link-local padding that
-    // defeats content dedup and is discarded here; the rest is our
-    // MessageFrame wire bytes.
+    // The tag is a link-local identity token (not a HAM callsign), so the
+    // session layer is given no callsign — MeshCore traffic reassembles by
+    // group_id alone. The sequence byte is link-local padding that defeats
+    // content dedup and is discarded here; the rest is our MessageFrame wire
+    // bytes.
     const body = frame[4..];
     if (body.len <= radio_overhead_len) return;
 
     var msg: IncomingMessage = .{};
-    var cs_buf: [identity_callsign_len]u8 = undefined;
-    const cs = identityHex(&cs_buf, body[0..identity_tag_len].*);
-    msg.has_callsign = true;
-    @memcpy(msg.callsign[0..cs.len], cs);
-    msg.callsign_str_len = @intCast(cs.len);
 
     if (!decodePacket(body[radio_overhead_len..], &msg)) return;
     conn.core.enqueueIncoming(msg);
@@ -577,12 +564,6 @@ test "writeTxCommand rejects wire bytes beyond the serial frame cap" {
     try testing.expect(writeTxCommand(&buf, .{0} ** identity_tag_len, 0, &wire) == null);
 }
 
-test "identityHex renders uppercase callsign characters" {
-    var cs: [identity_callsign_len]u8 = undefined;
-    const s = identityHex(&cs, .{ 0x95, 0x1A, 0x0B, 0x07 });
-    try testing.expectEqualStrings("951A0B07", s);
-}
-
 test "RxParser handles fragmented and coalesced frames" {
     const Collector = struct {
         frames: [8][]const u8 = undefined,
@@ -692,8 +673,10 @@ test "raw data push becomes a decoded IncomingMessage; other frames are skipped"
     const n = conn.core.drainIncoming(&dest);
     try testing.expectEqual(@as(usize, 1), n);
     try testing.expect(dest[0].is_message_frame);
-    try testing.expect(dest[0].has_callsign);
-    try testing.expectEqualStrings("DEADBEEF", dest[0].callsign[0..dest[0].callsign_str_len]);
+    // MeshCore surfaces no callsign — the identity tag is a link-local token,
+    // not a HAM callsign, so the session layer gets no callsign for it.
+    try testing.expect(!dest[0].has_callsign);
+    try testing.expectEqual(@as(u8, 0), dest[0].callsign_str_len);
     try testing.expectEqualSlices(u8, chunk, dest[0].frame_payload[0..chunk.len]);
 }
 
