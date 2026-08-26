@@ -14,7 +14,7 @@ conversation in data modes.
   Ed25519-signed; users are authenticated via public keys transmitted with messages.
   Servers have a public key that is transmitted to the client to be a known trusted source.
 - **Pluggable transports** - Implement the `Transport` vtable to add a new link layer.
-  - **AGWPE** - (TCP protocol spoken by ham-radio TNCs such as Direwolf.
+  - **AGWPE** - TCP protocol spoken by ham-radio TNCs such as Direwolf (Only tested against 1.8.1).
   - **TCP** - Direct client/server links without a TNC.
   - **MeshCore** - Base firmware 1.7+ not using TNC
 - **Client side Cache** - Client caches bulletins and other user information locally to minimize network time.
