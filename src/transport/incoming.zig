@@ -12,7 +12,7 @@
 //! between threads without ownership concerns.
 
 const std = @import("std");
-const signing = @import("../signing.zig");
+const signing = @import("../crypto/signing.zig");
 const message_type = @import("../message_frame/message_type.zig");
 const frame = @import("frame.zig");
 

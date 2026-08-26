@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const limits = @import("limits.zig");
-const unishox2 = @import("../unishox2.zig");
+const unishox2 = @import("unishox2.zig");
 
 const max_chunk_len = limits.max_chunk_len;
 pub const public_key_len: usize = 32;

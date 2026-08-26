@@ -92,10 +92,19 @@ pub fn sendHeartbeat(ctx: *const ServerCtx, route: Route) !void {
 
     const total_pages = ctx.store.totalPages(page_size);
 
+    // Map store-native `BulletinSummary` to the wire `message_frame.BulletinSummary`
+    // (the titles are borrowed from the store records and stay alive until the
+    // encode completes below).
+    var wire_summaries = ctx.store.allocator.alloc(message_frame.BulletinSummary, summaries.len) catch return;
+    defer ctx.store.allocator.free(wire_summaries);
+    for (summaries, 0..) |s, i| {
+        wire_summaries[i] = .{ .id = s.id, .user_id = s.user_id, .title = s.title };
+    }
+
     const bl_payload: message_frame.Payload = .{ .bulletin_list = .{
         .page = page,
         .total_pages = total_pages,
-        .bulletins = summaries,
+        .bulletins = wire_summaries,
     } };
 
     try send(ctx, 0, bl_payload, .bulletin_list, route);

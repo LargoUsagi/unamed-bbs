@@ -36,7 +36,10 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
     const req = decoded.?.bulletin_list_request;
     try ctx.stderr.print("  page={d} page_size={d}\n", .{ req.page, req.page_size });
 
-    // Build the response.
+    // Build the response. The store returns store-native `BulletinSummary`
+    // records; the wire payload needs `message_frame.BulletinSummary`. Map
+    // field-by-field (the titles are borrowed from the store records and stay
+    // alive until the encode completes below).
     const summaries = ctx.store.listPage(req.page, req.page_size) catch {
         try ctx.stderr.writeAll("  error: failed to build page\n");
         try ctx.stderr.flush();
@@ -48,10 +51,17 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
     }
 
     const total_pages = ctx.store.totalPages(req.page_size);
+
+    var wire_summaries = ctx.store.allocator.alloc(message_frame.BulletinSummary, summaries.len) catch return;
+    defer ctx.store.allocator.free(wire_summaries);
+    for (summaries, 0..) |s, i| {
+        wire_summaries[i] = .{ .id = s.id, .user_id = s.user_id, .title = s.title };
+    }
+
     const bl_payload: message_frame.Payload = .{ .bulletin_list = .{
         .page = req.page,
         .total_pages = total_pages,
-        .bulletins = summaries,
+        .bulletins = wire_summaries,
     } };
 
     try outbox.send(ctx, msg.port, bl_payload, .bulletin_list, .broadcast_source);

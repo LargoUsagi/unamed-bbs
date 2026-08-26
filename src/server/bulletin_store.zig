@@ -1,7 +1,7 @@
 //! Server-side bulletin store.
 //!
 //! Wraps the shared (replicated) `bulletins` and `users` tables defined in
-//! `src/store.zig` and exposes the server's high-level `Store` API. The
+//! `src/store/` and exposes the server's high-level `Store` API. The
 //! server is free to add server-private tables here (e.g. operator
 //! statuses, email addresses, server config) — those are never shared with
 //! clients and stay out of the common schema so a seed bundle generated from
@@ -20,7 +20,7 @@ pub const BulletinResponseRecord = store.BulletinResponseRecord;
 pub const ChatRecord = store.ChatRecord;
 
 /// Server bulletin store backed by SQLite. The `bulletins` and `users`
-/// tables share their schema with the client store via `src/store.zig`.
+/// tables share their schema with the client store via `src/store/`.
 pub const Store = struct {
     allocator: std.mem.Allocator,
     db: sqlite.Db,

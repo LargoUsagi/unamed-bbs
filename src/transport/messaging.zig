@@ -35,7 +35,7 @@
 const std = @import("std");
 
 const message_frame = @import("../message_frame.zig");
-const signing = @import("../signing.zig");
+const signing = @import("../crypto/signing.zig");
 
 const transport_mod = @import("transport.zig");
 const frame_mod = transport_mod.frame;

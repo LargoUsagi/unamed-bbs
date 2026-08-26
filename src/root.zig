@@ -7,6 +7,11 @@
 //!
 //! Layer map (dependencies point downward only):
 //!   * `message_frame` — typed application payloads + wire size limits
+//!     (depends on `message_frame/unishox2.zig` for on-the-wire compression)
+//!   * `store` — replicated SQLite schema, record types, and query helpers
+//!     (`store/records.zig`, `store/schema.zig`, `store/queries.zig`)
+//!   * `crypto/signing` — Ed25519 signing, key loading, key derivation
+//!   * `util/avatar` — ASCII art avatar generation
 //!   * `transport.frame` / `transport.incoming` — packetization wire format
 //!   * `transport.transport` — link-agnostic `Transport` vtable + splitting
 //!   * `transport.messaging` — sessions: sign, fan-out, reassembly
@@ -24,11 +29,10 @@ pub const connection = @import("transport/connection.zig");
 pub const endpoint = @import("transport/endpoint.zig");
 pub const reassembly = @import("transport/reassembly.zig");
 pub const messaging = @import("transport/messaging.zig");
-pub const signing = @import("signing.zig");
+pub const signing = @import("crypto/signing.zig");
 pub const message_frame = @import("message_frame.zig");
 pub const store = @import("store.zig");
-pub const unishox2 = @import("unishox2.zig");
-pub const avatar = @import("avatar.zig");
+pub const avatar = @import("util/avatar.zig");
 
 // Reference every shared submodule so `zig build test`'s `mod_tests`
 // executable (rooted here) compiles and runs their `test {}` blocks.
@@ -45,9 +49,9 @@ test {
     _ = @import("transport/endpoint.zig");
     _ = @import("transport/reassembly.zig");
     _ = @import("transport/messaging.zig");
-    _ = @import("signing.zig");
+    _ = @import("crypto/signing.zig");
     _ = @import("message_frame.zig");
     _ = @import("store.zig");
-    _ = @import("unishox2.zig");
-    _ = @import("avatar.zig");
+    _ = @import("util/avatar.zig");
+    _ = @import("message_frame/unishox2.zig");
 }

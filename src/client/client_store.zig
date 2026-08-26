@@ -1,7 +1,7 @@
 //! Client-side store.
 //!
 //! Backed by SQLite. Uses the shared (replicated) `bulletins` and `users`
-//! table schemas from `src/store.zig` so that a seed bundle produced from
+//! table schemas from `src/store/` so that a seed bundle produced from
 //! those tables on the server can be imported here verbatim. The `users`
 //! table is created on the client even though it is currently unused for
 //! queries — it exists so a future server seed bundle can be copied in
@@ -33,7 +33,7 @@ pub const BulletinSummary = store.BulletinSummary;
 pub const ChatRecord = store.ChatRecord;
 
 /// Client store backed by SQLite. The `bulletins` and `users` tables share
-/// their schema with the server store via `src/store.zig`.
+/// their schema with the server store via `src/store/`.
 pub const Store = struct {
     allocator: std.mem.Allocator,
     db: sqlite.Db,

@@ -34,7 +34,7 @@
 //! Single-packet messages use packet_number=0, packet_count=1.
 
 const std = @import("std");
-const signing = @import("../signing.zig");
+const signing = @import("../crypto/signing.zig");
 const limits = @import("../message_frame/limits.zig");
 const message_type = @import("../message_frame/message_type.zig");
 
