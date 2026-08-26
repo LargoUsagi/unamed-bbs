@@ -10,13 +10,13 @@
 //!   * `transport.frame` / `transport.incoming` — packetization wire format
 //!   * `transport.transport` — link-agnostic `Transport` vtable + splitting
 //!   * `transport.messaging` — sessions: sign, fan-out, reassembly
-//!   * `transport.agwpe` / `transport.tcp` — concrete link implementations
+//!   * `transport.link.agwpe` / `transport.link.tcp` — concrete link impls
 
 const std = @import("std");
 const Io = std.Io;
 
-pub const agwpe = @import("transport/agwpe.zig");
-pub const tcp = @import("transport/tcp.zig");
+pub const agwpe = @import("transport/link/agwpe.zig");
+pub const tcp = @import("transport/link/tcp.zig");
 pub const transport = @import("transport/transport.zig");
 pub const endpoint = @import("transport/endpoint.zig");
 pub const reassembly = @import("transport/reassembly.zig");
@@ -33,8 +33,8 @@ pub const avatar = @import("avatar.zig");
 // every test in store.zig, signing.zig, unishox2.zig, avatar.zig,
 // transport/*.zig, and message_frame/*.zig is silently skipped.
 test {
-    _ = @import("transport/agwpe.zig");
-    _ = @import("transport/tcp.zig");
+    _ = @import("transport/link/agwpe.zig");
+    _ = @import("transport/link/tcp.zig");
     _ = @import("transport/transport.zig");
     _ = @import("transport/frame.zig");
     _ = @import("transport/incoming.zig");

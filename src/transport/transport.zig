@@ -92,6 +92,16 @@ pub const Transport = struct {
         /// flag — does not affect framing or the wire protocol.
         high_bandwidth: bool,
 
+        /// True when the link needs periodic unsolicited broadcasts
+        /// (beacons): half-duplex shared-medium channels (e.g. AX.25 ham
+        /// radio via AGWPE) where listeners join at any time and only hear
+        /// traffic actually transmitted on the frequency. False for
+        /// connected point-to-point links (direct TCP) where clients pull
+        /// data themselves and beacons are pure waste. The server's
+        /// heartbeat consults this per transport and only beacons links
+        /// whose own last-transmit time has gone stale.
+        requires_beacon: bool,
+
         /// Returns true while the transport is connected and usable.
         isConnected: *const fn (ctx: *anyopaque) bool,
 
@@ -125,6 +135,13 @@ pub const Transport = struct {
     /// (callers check `inbox.isHighBandwidth()` which guards the null case).
     pub inline fn isHighBandwidth(self: Transport) bool {
         return self.vtable.high_bandwidth;
+    }
+
+    /// True when this link expects periodic unsolicited broadcasts
+    /// (beacons). The server's heartbeat checks this per transport before
+    /// deciding to transmit.
+    pub inline fn requiresBeacon(self: Transport) bool {
+        return self.vtable.requires_beacon;
     }
 
     pub inline fn isConnected(self: Transport) bool {
@@ -270,12 +287,14 @@ fn stubDrainIncoming(_: *anyopaque, _: []IncomingMessage) usize {
 }
 fn stubDisconnect(_: *anyopaque) void {}
 
-// The vtable literal carries a runtime `high_bandwidth` value, so it must
-// live in a static var — an anonymous literal would be a dangling temporary.
+// The vtable literals carry runtime `high_bandwidth` / `requires_beacon`
+// values, so they must live in static vars — an anonymous literal would be a
+// dangling temporary.
 test "Transport.isHighBandwidth reflects the vtable field" {
     const vtable_high: Transport.VTable = .{
         .mtu_payload = 256,
         .high_bandwidth = true,
+        .requires_beacon = false,
         .isConnected = stubIsConnected,
         .sendWire = stubSendWire,
         .drainIncoming = stubDrainIncoming,
@@ -284,6 +303,7 @@ test "Transport.isHighBandwidth reflects the vtable field" {
     const vtable_low: Transport.VTable = .{
         .mtu_payload = 256,
         .high_bandwidth = false,
+        .requires_beacon = true,
         .isConnected = stubIsConnected,
         .sendWire = stubSendWire,
         .drainIncoming = stubDrainIncoming,
@@ -295,4 +315,6 @@ test "Transport.isHighBandwidth reflects the vtable field" {
 
     try testing.expect(high.isHighBandwidth());
     try testing.expect(!low.isHighBandwidth());
+    try testing.expect(!high.requiresBeacon());
+    try testing.expect(low.requiresBeacon());
 }

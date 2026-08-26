@@ -383,6 +383,7 @@ const Capture = struct {
         self.vtable_storage = .{
             .mtu_payload = self.mtu,
             .high_bandwidth = false,
+            .requires_beacon = false,
             .isConnected = isConnected,
             .sendWire = sendWire,
             .drainIncoming = drainIncoming,

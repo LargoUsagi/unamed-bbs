@@ -73,9 +73,10 @@ pub fn broadcastUserInfo(
     try ctx.stderr.flush();
 }
 
-/// Transmit the first page of bulletins as a heartbeat. Always broadcast
-/// to all radios (useful for all listeners to cache).
-pub fn sendHeartbeat(ctx: *const ServerCtx, port: u4) !void {
+/// Transmit the first page of bulletins as a heartbeat. The caller picks the
+/// route: `Route.onTransport(id)` to beacon one silent beacon-capable radio
+/// (the heartbeat loop's use), or `.broadcast_all` for a full fan-out.
+pub fn sendHeartbeat(ctx: *const ServerCtx, route: Route) !void {
     const page: u16 = 0;
     const page_size: u8 = 5;
 
@@ -97,7 +98,7 @@ pub fn sendHeartbeat(ctx: *const ServerCtx, port: u4) !void {
         .bulletins = summaries,
     } };
 
-    try send(ctx, port, bl_payload, .bulletin_list, .broadcast_all);
+    try send(ctx, 0, bl_payload, .bulletin_list, route);
 
     try ctx.stderr.print("  TX heartbeat bulletin_list: {d} entries, page 0/{d}\n", .{ summaries.len, total_pages });
     try ctx.stderr.flush();

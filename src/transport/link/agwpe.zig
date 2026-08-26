@@ -40,7 +40,7 @@ const Io = std.Io;
 const net = Io.net;
 
 /// Shared transport abstraction (`Transport` vtable + multipart splitting).
-pub const transport = @import("transport.zig");
+pub const transport = @import("../transport.zig");
 const incoming_mod = transport.incoming;
 
 const IncomingMessage = incoming_mod.IncomingMessage;
@@ -390,7 +390,7 @@ test "writeHeader produces correct layout" {
 // 'R' + 'k' post-connect handshake.
 // ---------------------------------------------------------------------------
 
-const connection_mod = @import("connection.zig");
+const connection_mod = @import("../connection.zig");
 
 /// Persistent TCP connection to an AGWPE TNC (e.g. Direwolf). Keeps the socket
 /// open, sends UI frames on demand from the main thread, and runs a background
@@ -540,6 +540,7 @@ pub const mtu_payload: usize = 512;
 const agwpe_transport_vtable: transport.Transport.VTable = .{
     .mtu_payload = mtu_payload,
     .high_bandwidth = false,
+    .requires_beacon = true,
     .isConnected = transportIsConnected,
     .sendWire = transportSendWire,
     .drainIncoming = transportDrainIncoming,

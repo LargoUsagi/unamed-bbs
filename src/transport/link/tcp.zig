@@ -29,7 +29,7 @@ const Io = std.Io;
 const net = Io.net;
 
 /// Shared transport abstraction (`Transport` vtable + multipart splitting).
-pub const transport = @import("transport.zig");
+pub const transport = @import("../transport.zig");
 const incoming_mod = transport.incoming;
 
 const IncomingMessage = incoming_mod.IncomingMessage;
@@ -376,7 +376,7 @@ test "EnvelopeParser rejects bad magic" {
 // envelope parser and the envelope transmit wrapper.
 // ---------------------------------------------------------------------------
 
-const connection_mod = @import("connection.zig");
+const connection_mod = @import("../connection.zig");
 
 /// Persistent TCP connection for the direct TCP transport. Mirrors
 /// `agwpe.Connection`: keeps the socket open, sends framed envelopes on
@@ -493,6 +493,7 @@ fn sendWireFrame(core: *connection_mod.Core, port: u4, call_to: []const u8, payl
 const tcp_transport_vtable: transport.Transport.VTable = .{
     .mtu_payload = mtu_payload,
     .high_bandwidth = true,
+    .requires_beacon = false,
     .isConnected = transportIsConnected,
     .sendWire = transportSendWire,
     .drainIncoming = transportDrainIncoming,

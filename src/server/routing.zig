@@ -6,24 +6,27 @@
 //!
 //!   1. **Which radio(s)?** — `RadioScope`
 //!      - `.all` — send on every connected transport (e.g. chat broadcasts,
-//!        heartbeats, new bulletins — anything useful for all listeners to
-//!        cache).
+//!        new bulletins, MOTD, user info — anything useful for all listeners
+//!        to cache).
 //!      - `.single` — send only on the transport that received the triggering
 //!        request (e.g. NAK retransmits that are only relevant to clients on
 //!        that radio).
+//!      - `.target` — send only on the named pool transport (e.g. a beacon
+//!        heartbeat aimed at one silent beacon-capable radio).
 //!
 //!   2. **Which client(s)?** — `ClientScope`
 //!      - `.all` — broadcast to CQ (all listeners on the radio).
 //!      - `.single` — directed to a specific callsign (e.g. registration
 //!        acks, request_status rejections, chat rejects).
 //!
-//! The three useful combinations are:
+//! The useful combinations are:
 //!
 //!   | radios  | clients | Use case |
 //!   |---------|---------|----------|
-//!   | all     | all     | Chat, heartbeat, new bulletins, MOTD, user info |
+//!   | all     | all     | Chat, new bulletins, MOTD, user info |
 //!   | single  | all     | NAK retransmits (same radio, CQ) |
 //!   | single  | single  | Registration acks, request_status, chat rejects |
+//!   | target  | all     | Beacon heartbeat to one silent beacon-capable radio |
 
 const std = @import("std");
 
@@ -32,11 +35,14 @@ const std = @import("std");
 pub const TransportId = u8;
 
 /// Which radio(s) a message should be transmitted on.
-pub const RadioScope = enum {
+pub const RadioScope = union(enum) {
     /// Send on every connected transport.
     all,
     /// Send only on the transport that received the triggering request.
     single,
+    /// Send only on the named pool transport, on that transport's own
+    /// default radio channel.
+    target: TransportId,
 };
 
 /// Which client(s) a message should be addressed to.
@@ -78,6 +84,15 @@ pub const Route = struct {
         return .{
             .radios = .single,
             .clients = .{ .single = callsign },
+        };
+    }
+
+    /// Only the named pool transport, all clients (CQ) — used for the
+    /// per-link heartbeat beacon aimed at one silent beacon-capable radio.
+    pub fn onTransport(id: TransportId) Route {
+        return .{
+            .radios = .{ .target = id },
+            .clients = .all,
         };
     }
 

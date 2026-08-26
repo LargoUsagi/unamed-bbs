@@ -2,10 +2,16 @@
 //!
 //! Connects to one or more AGWPE TNCs (e.g. Direwolf) via `--connect` and/or
 //! listens for direct TCP client connections via `--listen`. Broadcasts
-//! (chat, bulletins, heartbeat, MOTD, user info) are sent to ALL connected
-//! transports so every listener can cache them. Directed responses
+//! (chat, bulletins, MOTD, user info) are sent to ALL connected transports
+//! so every listener can cache them. Directed responses
 //! (registration acks, request_status, chat rejects) and NAK retransmits go
 //! only to the source transport.
+//!
+//! The heartbeat is a per-link beacon: only transports whose vtable declares
+//! `requires_beacon = true` (ham radio links where listeners depend on
+//! periodic unsolicited traffic) are beaconed, and only when THAT link's own
+//! last successful transmission falls outside the current 10-minute
+//! wall-clock window. Direct TCP links are never beaconed.
 //!
 //! This file owns only lifecycle: arg parsing, key/store/MOTD setup, transport
 //! pool setup, connect/reconnect, TCP accept, and the heartbeat timer. All
@@ -36,6 +42,7 @@ const ServerCtx = context.ServerCtx;
 const TransportPool = transports.TransportPool;
 const TransportSpec = cli.TransportSpec;
 const TransportId = routing.TransportId;
+const Route = routing.Route;
 const max_transports = transports.max_transports;
 
 /// Default Message of the Day used when the database has no persisted MOTD.
@@ -43,6 +50,13 @@ const default_motd = "Welcome to the BBS.";
 
 /// Seconds between reconnection attempts for a dropped transport.
 const retry_delay_sec: u64 = 5;
+
+/// Length of the heartbeat beacon window, in seconds. A transport whose
+/// vtable declares `requires_beacon` is beaconed once per wall-clock window
+/// (:00/:10/:20…) in which it has not transmitted anything itself. Windows
+/// are synchronized to the hour so beacons from different stations line up
+/// on the same schedule.
+const beacon_window_sec: u64 = 600;
 
 /// Pending accepted TCP stream + the listener index it came from. The accept
 /// thread pushes these; the main loop drains them and wraps them into the pool.
@@ -269,9 +283,6 @@ pub fn main(init: std.process.Init) !void {
     // Per-TCP-connect reconnection timestamps.
     var last_tcp_reconnect: [max_transports]u64 = .{0} ** max_transports;
 
-    // Track the last time we transmitted anything. Used by the heartbeat.
-    var last_tx_time: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
-
     // Mutable MOTD — sysop can update it at runtime via a `motd` message.
     var current_motd: []const u8 = initial_motd;
 
@@ -406,24 +417,28 @@ pub fn main(init: std.process.Init) !void {
         }
 
         // --- Drain and process incoming messages through the inbox ---
-        const processed = inbox.drain(&base_ctx);
-        if (processed > 0) {
-            last_tx_time = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
-        }
+        _ = inbox.drain(&base_ctx);
 
         // Evict stale multipart reassembly entries (30s timeout).
         inbox.processTimeouts(&base_ctx);
 
-        // --- Heartbeat: broadcast bulletin list if no TX in this 10-min window ---
+        // --- Heartbeat: per-link beacon for silent beacon-capable radios ---
         {
             const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
             const seconds_into_hour = now % 3600;
-            const window_start = now - (seconds_into_hour % 600);
-            if (last_tx_time < window_start and pool.anyConnected()) {
-                try stderr.print("heartbeat: no TX in current 10-minute window, sending bulletin list\n", .{});
+            const window_start = now - (seconds_into_hour % beacon_window_sec);
+            var id: TransportId = 0;
+            while (id < pool.count) : (id += 1) {
+                const t = pool.get(id) orelse continue;
+                if (!t.isConnected()) continue;
+                if (!t.transport.requiresBeacon()) continue;
+                if (t.last_tx_sec >= window_start) continue;
+                try stderr.print("heartbeat: no TX on {s} in current {d}-minute window, sending bulletin list\n", .{ t.name, beacon_window_sec / 60 });
                 try stderr.flush();
-                outbox.sendHeartbeat(&base_ctx, 0) catch {};
-                last_tx_time = now;
+                outbox.sendHeartbeat(&base_ctx, Route.onTransport(id)) catch {};
+                // Stamp even if the send failed so a dead link retries on
+                // the next window instead of every loop iteration.
+                t.last_tx_sec = now;
             }
         }
 
