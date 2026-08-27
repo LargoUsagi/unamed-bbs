@@ -8,8 +8,6 @@ const std = @import("std");
 
 const types = @import("types.zig");
 const app = @import("app.zig");
-const transport = types.transport;
-const message_frame = types.message_frame;
 
 const AppContext = app.AppContext;
 const SendResult = types.SendResult;
@@ -149,7 +147,8 @@ pub fn chatEntryExists(ctx: *AppContext, timestamp: u64) bool {
 /// complete incoming message (accepted or rejected).
 pub fn logIncoming(
     ctx: *AppContext,
-    msg: types.messaging.Message,
+    msg_type: types.protocol.MessageType,
+    callsign: []const u8,
     sig: SigStatus,
     status: types.MsgLogStatus,
 ) void {
@@ -173,18 +172,13 @@ pub fn logIncoming(
     };
 
     // Type tag
-    entry.tag = types.msgTypeTag(&msg);
+    entry.tag = types.msgTypeTag(msg_type);
     entry.tag_len = 3;
 
     // Callsign
-    if (msg.has_callsign) {
-        const cs = msg.callsignSlice();
-        const cn = @min(cs.len, transport.callsign_len);
-        @memcpy(entry.callsign[0..cn], cs[0..cn]);
-        entry.callsign_len = @intCast(cn);
-    } else {
-        entry.callsign_len = 0;
-    }
+    const cn = @min(callsign.len, entry.callsign.len);
+    @memcpy(entry.callsign[0..cn], callsign[0..cn]);
+    entry.callsign_len = @intCast(cn);
 
     entry.sig = sig;
     entry.status = status;

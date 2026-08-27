@@ -31,7 +31,7 @@ const identity_mod = @import("../identity.zig");
 const settings_screen = @import("settings.zig");
 
 /// Maximum handle length, enforced on the client and server.
-pub const max_handle_len: usize = bbs.message_frame.max_handle_len;
+pub const max_handle_len: usize = bbs.protocol.max_handle_len;
 
 pub const State = struct {
     ctx: *app.AppContext = undefined,

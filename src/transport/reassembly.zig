@@ -15,7 +15,7 @@ const std = @import("std");
 
 const incoming_mod = @import("incoming.zig");
 const frame = @import("frame.zig");
-const message_type = @import("../message_frame/message_type.zig");
+const message_type = @import("message_frame/message_type.zig");
 
 const MessageType = message_type.MessageType;
 const IncomingMessage = incoming_mod.IncomingMessage;

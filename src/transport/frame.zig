@@ -35,8 +35,8 @@
 
 const std = @import("std");
 const signing = @import("../crypto/signing.zig");
-const limits = @import("../message_frame/limits.zig");
-const message_type = @import("../message_frame/message_type.zig");
+const limits = @import("message_frame/limits.zig");
+const message_type = @import("message_frame/message_type.zig");
 
 pub const MessageType = message_type.MessageType;
 pub const Payload = message_type.Payload;

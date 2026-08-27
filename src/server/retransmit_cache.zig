@@ -10,14 +10,14 @@ const Io = std.Io;
 
 const kiss = @import("bbs");
 const transport_mod = kiss.transport;
-const message_frame = kiss.message_frame;
+const protocol = kiss.protocol;
 const signing = kiss.signing;
 
 /// Entry in the retransmission cache. Stores per-packet params so the server
 /// can rebuild and retransmit a specific frame via `ServerTransport.sendRaw` on NAK.
 pub const RetransmitEntry = struct {
     active: bool = false,
-    msg_type: message_frame.MessageType = @enumFromInt(0),
+    msg_type: protocol.MessageType = @enumFromInt(0),
     group_id: u4 = 0,
     packet_number: u8 = 0,
     packet_count: u8 = 0,

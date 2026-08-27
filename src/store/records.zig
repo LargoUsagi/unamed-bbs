@@ -4,10 +4,11 @@
 //! These are the persistent, memory-owning structs that mirror the replicated
 //! SQLite tables. Each owns its heap-allocated slices (`handle`, `callsign`,
 //! `body`, `title`, `avatar`, `text`) and provides a `deinit` to free them.
-//! They are distinct from the wire-payload structs in `message_frame/`: the
-//! wire types (`message_frame.Bulletin`, `message_frame.BulletinResponse`,
-//! …) are transient decoded payloads, while the records here are the
-//! canonical form the app holds in its database and renders in the UI.
+//! They are distinct from the wire-payload structs in
+//! `transport/message_frame/`: the wire types (`message_frame.Bulletin`,
+//! `message_frame.BulletinResponse`, …) are transient decoded payloads, while
+//! the records here are the canonical form the app holds in its database and
+//! renders in the UI.
 //!
 //! `BulletinSummary` is the store-native projection used by the paginated
 //! `listPage` / `listAllBulletins` query helpers — same field shape as
@@ -19,7 +20,7 @@ const std = @import("std");
 /// Maximum number of responses a single bulletin may have. The id space is
 /// 0..1023 inclusive (a u10). When a bulletin reaches this count the reply
 /// UI on the client is hidden — no more responses can be added.
-pub const max_response_id: u16 = @import("../message_frame/bulletin_response.zig").max_response_id;
+pub const max_response_id: u16 = @import("../protocol.zig").max_response_id;
 
 /// A registered user: a handle (display name), a callsign, and the
 /// Ed25519 public key they registered with. `id` is the server-assigned

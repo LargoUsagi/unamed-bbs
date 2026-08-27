@@ -49,8 +49,10 @@ const unishox2 = @import("unishox2.zig");
 
 const max_encode_len = limits.max_encode_len;
 
+const protocol = @import("../../protocol.zig");
+
 /// Maximum value of a `response_id` (the id space is 0..1023).
-pub const max_response_id: u16 = 1023;
+pub const max_response_id: u16 = protocol.max_response_id;
 
 /// A single reply to a bulletin.
 pub const BulletinResponse = struct {
@@ -257,12 +259,7 @@ pub const BulletinResponseList = struct {
 };
 
 /// Mode for a `bulletin_response_request`.
-pub const ResponseRequestMode = enum(u8) {
-    /// "I have all of 0..after_id; send everything after after_id."
-    tail_after = 0,
-    /// "Send responses in the inclusive range [start_id, end_id]."
-    range = 1,
-};
+pub const ResponseRequestMode = protocol.ResponseRequestMode;
 
 /// A client request for missing responses for a single bulletin.
 ///

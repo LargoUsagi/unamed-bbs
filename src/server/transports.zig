@@ -29,7 +29,7 @@ const transport_mod = @import("bbs").transport;
 const agwpe = @import("bbs").agwpe;
 const tcp_mod = @import("bbs").tcp;
 const meshcore_mod = @import("bbs").meshcore;
-const message_frame = @import("bbs").message_frame;
+const protocol = @import("bbs").protocol;
 const messaging = @import("bbs").messaging;
 
 const routing = @import("routing.zig");
@@ -117,7 +117,7 @@ pub const ServerTransport = struct {
         self: *ServerTransport,
         port: u4,
         call_to: []const u8,
-        msg_type: message_frame.MessageType,
+        msg_type: protocol.MessageType,
         payload: []const u8,
         sig: []const u8,
         opts: transport_mod.SendOptions,
@@ -153,7 +153,7 @@ pub const ServerTransport = struct {
         self: *ServerTransport,
         port: u4,
         call_to: []const u8,
-        msg_type: message_frame.MessageType,
+        msg_type: protocol.MessageType,
         payload: []const u8,
         sig: []const u8,
         opts: transport_mod.SendOptions,

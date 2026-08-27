@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const signing = @import("../crypto/signing.zig");
-const message_type = @import("../message_frame/message_type.zig");
+const message_type = @import("message_frame/message_type.zig");
 const frame = @import("frame.zig");
 
 const MessageType = message_type.MessageType;

@@ -6,50 +6,35 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
-const messaging = kiss.messaging;
-const transport = kiss.transport;
-const signing = kiss.signing;
-const message_frame = kiss.message_frame;
+const protocol = kiss.protocol;
 
 const context = @import("../context.zig");
 const ServerCtx = context.ServerCtx;
+const RequestMeta = context.RequestMeta;
 
 const outbox = @import("../outbox.zig");
 const routing = @import("../routing.zig");
 
-pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
-    const callsign = msg.callsignSlice();
-    const payload_bytes = msg.payloadSlice();
-    const allocator = std.heap.page_allocator;
-
-    try ctx.stderr.print("RX bulletin_response_request from {s}\n", .{callsign});
-
-    const decoded = message_frame.decodePayload(allocator, .bulletin_response_request, payload_bytes) catch {
-        try ctx.stderr.writeAll("  error: failed to decode bulletin_response_request\n");
-        try ctx.stderr.flush();
-        return;
-    };
-    if (decoded == null) {
-        try ctx.stderr.writeAll("  error: malformed bulletin_response_request\n");
-        try ctx.stderr.flush();
-        return;
-    }
-    defer message_frame.deinitPayload(allocator, decoded.?);
-
-    const req = decoded.?.bulletin_response_request;
-    try ctx.stderr.print("  bulletin={d} mode={s}\n", .{
-        req.bulletin_id,
-        @tagName(req.mode),
-    });
+pub fn handle(
+    ctx: *const ServerCtx,
+    meta: RequestMeta,
+    bulletin_id: u32,
+    mode: protocol.ResponseRequestMode,
+    after_id: u16,
+    start_id: u16,
+    end_id: u16,
+) !void {
+    try ctx.stderr.print("RX bulletin_response_request from {s}\n", .{meta.callsign});
+    try ctx.stderr.print("  bulletin={d} mode={s}\n", .{ bulletin_id, @tagName(mode) });
 
     // Query the appropriate responses from the store.
-    const responses = switch (req.mode) {
-        .tail_after => ctx.store.listResponsesAfter(req.bulletin_id, req.after_id) catch {
+    const responses = switch (mode) {
+        .tail_after => ctx.store.listResponsesAfter(bulletin_id, after_id) catch {
             try ctx.stderr.writeAll("  error: failed to query responses (tail_after)\n");
             try ctx.stderr.flush();
             return;
         },
-        .range => ctx.store.listResponsesRange(req.bulletin_id, req.start_id, req.end_id) catch {
+        .range => ctx.store.listResponsesRange(bulletin_id, start_id, end_id) catch {
             try ctx.stderr.writeAll("  error: failed to query responses (range)\n");
             try ctx.stderr.flush();
             return;
@@ -61,17 +46,12 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
         // No data to return — send a directed RequestStatus to the
         // requesting callsign so the client knows the request was
         // processed but yielded nothing.
-        try ctx.stderr.print("  no responses — sending request_status no_data to {s}\n", .{callsign});
+        try ctx.stderr.print("  no responses — sending request_status no_data to {s}\n", .{meta.callsign});
         try ctx.stderr.flush();
 
         var detail_buf: [128]u8 = undefined;
-        const detail = std.fmt.bufPrint(&detail_buf, "No responses found for bulletin {d}.", .{req.bulletin_id}) catch "";
-        const status_payload: message_frame.Payload = .{ .request_status = .{
-            .request_id = 0,
-            .outcome = .no_data,
-            .detail = detail,
-        } };
-        outbox.send(ctx, msg.port, status_payload, .request_status, routing.Route.directed(callsign)) catch {};
+        const detail = std.fmt.bufPrint(&detail_buf, "No responses found for bulletin {d}.", .{bulletin_id}) catch "";
+        outbox.sendRequestStatus(ctx, meta.port, 0, .no_data, detail, routing.Route.directed(meta.callsign)) catch {};
         return;
     }
 
@@ -81,20 +61,13 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
     // Broadcast each missing response as an individual
     // `bulletin_response` frame so any client listening can cache it.
     for (responses) |r| {
-        const out_payload: message_frame.Payload = .{ .bulletin_response = .{
-            .bulletin_id = r.bulletin_id,
-            .response_id = r.response_id,
-            .user_id = r.user_id,
-            .create_datetime = r.create_datetime,
-            .body = r.body,
-        } };
-        outbox.send(ctx, msg.port, out_payload, .bulletin_response, .broadcast_source) catch {
+        outbox.sendBulletinResponse(ctx, meta.port, r.bulletin_id, r.response_id, r.user_id, r.create_datetime, r.body, .broadcast_source) catch {
             try ctx.stderr.writeAll("  error: failed to send response\n");
             try ctx.stderr.flush();
             continue;
         };
     }
 
-    try ctx.stderr.print("  TX {d} bulletin_response(s) for bulletin={d}\n", .{ responses.len, req.bulletin_id });
+    try ctx.stderr.print("  TX {d} bulletin_response(s) for bulletin={d}\n", .{ responses.len, bulletin_id });
     try ctx.stderr.flush();
 }

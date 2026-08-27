@@ -13,7 +13,6 @@ const std = @import("std");
 
 const types = @import("types.zig");
 const cli = @import("cli.zig");
-const message_frame = types.message_frame;
 const signing = types.signing;
 
 const AppContext = @import("app.zig").AppContext;

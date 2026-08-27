@@ -9,15 +9,13 @@ const limits = @import("limits.zig");
 
 const max_chunk_len = limits.max_chunk_len;
 
+const protocol = @import("../../protocol.zig");
+
 /// Role encoded in a `public_key` message (u4, stored in the low nibble of the
 /// first payload byte). Clients mark their key with `.client`; a bulletin
 /// server marks its key with `.server` so receivers know which key to trust
 /// for server-originated messages (bulletin lists, etc.).
-pub const PublicKeyRole = enum(u4) {
-    client = 0,
-    server = 1,
-    _,
-};
+pub const PublicKeyRole = protocol.PublicKeyRole;
 
 /// Payload of a `public_key` message.
 pub const PublicKeyPayload = struct {

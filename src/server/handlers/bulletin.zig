@@ -6,37 +6,18 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
-const messaging = kiss.messaging;
-const transport = kiss.transport;
-const message_frame = kiss.message_frame;
+const protocol = kiss.protocol;
 
 const context = @import("../context.zig");
 const ServerCtx = context.ServerCtx;
+const RequestMeta = context.RequestMeta;
 
 const outbox = @import("../outbox.zig");
 
-pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
-    const callsign = msg.callsignSlice();
-    const payload_bytes = msg.payloadSlice();
-    const allocator = std.heap.page_allocator;
+pub fn handle(ctx: *const ServerCtx, meta: RequestMeta, title: []const u8, body: []const u8) !void {
+    try ctx.stderr.print("RX bulletin from {s}\n", .{meta.callsign});
 
-    try ctx.stderr.print("RX bulletin from {s}\n", .{callsign});
-
-    const decoded = message_frame.decodePayload(allocator, .bulletin, payload_bytes) catch {
-        try ctx.stderr.writeAll("  error: failed to decode bulletin\n");
-        try ctx.stderr.flush();
-        return;
-    };
-    if (decoded == null) {
-        try ctx.stderr.writeAll("  error: malformed bulletin\n");
-        try ctx.stderr.flush();
-        return;
-    }
-    defer message_frame.deinitPayload(allocator, decoded.?);
-
-    const bul = decoded.?.bulletin;
-
-    if (bul.title.len > message_frame.max_title_len or bul.body.len > message_frame.max_body_len) {
+    if (title.len > protocol.max_title_len or body.len > protocol.max_body_len) {
         try ctx.stderr.writeAll("  error: bulletin title or body exceeds limit\n");
         try ctx.stderr.flush();
         return;
@@ -45,12 +26,12 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
     // Identify the sender by their signing key — try to verify the
     // signature against every registered user's public key. This is
     // correct even when multiple users share a callsign (e.g. "NOCALL").
-    if (!msg.signed) {
+    if (!meta.signed) {
         try ctx.stderr.writeAll("  signature: none (rejected)\n");
         try ctx.stderr.flush();
         return;
     }
-    var user = ctx.store.findUserBySignature(msg.signature, payload_bytes) orelse {
+    var user = ctx.store.findUserBySignature(meta.signature, meta.payload_bytes) orelse {
         try ctx.stderr.writeAll("  signature: INVALID (no matching registered user)\n");
         try ctx.stderr.flush();
         return;
@@ -62,7 +43,7 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
     // timestamp — the client's value is ignored.
     const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
 
-    const id = ctx.store.add(user.id, now_secs, bul.title, bul.body) catch |err| {
+    const id = ctx.store.add(user.id, now_secs, title, body) catch |err| {
         try ctx.stderr.print("  error: failed to store bulletin: {s}\n", .{@errorName(err)});
         try ctx.stderr.flush();
         return;
@@ -73,21 +54,13 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
     };
 
     try ctx.stderr.print("  stored: id={d} title=\"{s}\" body={d}B created_at={d} total={d}\n", .{
-        id, bul.title, bul.body.len, now_secs, ctx.store.count(),
+        id, title, body.len, now_secs, ctx.store.count(),
     });
     try ctx.stderr.flush();
 
     // Broadcast the newly stored bulletin so clients can cache it
     // immediately. Use the canonical user id and server-set time.
-    const bul_payload: message_frame.Payload = .{ .bulletin = .{
-        .id = id,
-        .user_id = user.id,
-        .created_at = now_secs,
-        .title = bul.title,
-        .body = bul.body,
-    } };
-
-    outbox.send(ctx, msg.port, bul_payload, .bulletin, .broadcast_all) catch {
+    outbox.sendBulletin(ctx, meta.port, id, user.id, now_secs, title, body, .broadcast_all) catch {
         try ctx.stderr.writeAll("  error: failed to broadcast new bulletin\n");
         try ctx.stderr.flush();
         return;

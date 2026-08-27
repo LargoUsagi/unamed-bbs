@@ -6,42 +6,20 @@
 const std = @import("std");
 
 const kiss = @import("bbs");
-const messaging = kiss.messaging;
-const transport = kiss.transport;
-const signing = kiss.signing;
-const message_frame = kiss.message_frame;
 
 const context = @import("../context.zig");
 const ServerCtx = context.ServerCtx;
+const RequestMeta = context.RequestMeta;
 
 const outbox = @import("../outbox.zig");
 const routing = @import("../routing.zig");
 
-pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
-    const callsign = msg.callsignSlice();
-    const payload_bytes = msg.payloadSlice();
-    const allocator = std.heap.page_allocator;
-
+pub fn handle(ctx: *const ServerCtx, meta: RequestMeta, count: u8) !void {
     // A client asks for the most recent N chat messages. The server
     // responds by broadcasting up to N individual `chat` frames
     // (signed by the server, newest first) so the requester — and any
     // other listening station — can cache them.
-    try ctx.stderr.print("RX chat_history_request from {s}\n", .{callsign});
-
-    const decoded = message_frame.decodePayload(allocator, .chat_history_request, payload_bytes) catch {
-        try ctx.stderr.writeAll("  error: failed to decode chat_history_request\n");
-        try ctx.stderr.flush();
-        return;
-    };
-    if (decoded == null) {
-        try ctx.stderr.writeAll("  error: malformed chat_history_request\n");
-        try ctx.stderr.flush();
-        return;
-    }
-    defer message_frame.deinitPayload(allocator, decoded.?);
-
-    const req = decoded.?.chat_history_request;
-    const count = req.count;
+    try ctx.stderr.print("RX chat_history_request from {s}\n", .{meta.callsign});
     try ctx.stderr.print("  requesting {d} recent chat(s)\n", .{count});
     try ctx.stderr.flush();
 
@@ -55,14 +33,9 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
     if (chats.len == 0) {
         // No chat history yet — send a directed request_status so the
         // client knows the request was processed but yielded nothing.
-        try ctx.stderr.print("  no chats — sending request_status no_data to {s}\n", .{callsign});
+        try ctx.stderr.print("  no chats — sending request_status no_data to {s}\n", .{meta.callsign});
         try ctx.stderr.flush();
-        const status_payload: message_frame.Payload = .{ .request_status = .{
-            .request_id = 0,
-            .outcome = .no_data,
-            .detail = "No chat messages yet.",
-        } };
-        outbox.send(ctx, msg.port, status_payload, .request_status, routing.Route.directed(callsign)) catch {};
+        outbox.sendRequestStatus(ctx, meta.port, 0, .no_data, "No chat messages yet.", routing.Route.directed(meta.callsign)) catch {};
         return;
     }
 
@@ -72,12 +45,7 @@ pub fn handle(ctx: *const ServerCtx, msg: messaging.Message) !void {
     // Broadcast each chat as an individual `chat` frame (signed by the
     // server) so any client listening can cache it.
     for (chats) |c| {
-        const chat_payload: message_frame.Payload = .{ .chat = .{
-            .timestamp = c.epoch_time,
-            .user_id = c.user_id,
-            .text = c.text,
-        } };
-        outbox.send(ctx, msg.port, chat_payload, .chat, .broadcast_source) catch {
+        outbox.sendChat(ctx, meta.port, c.epoch_time, c.user_id, c.text, .broadcast_source) catch {
             try ctx.stderr.writeAll("  error: failed to send chat\n");
             try ctx.stderr.flush();
             continue;

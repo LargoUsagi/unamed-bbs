@@ -13,9 +13,10 @@ const zz = @import("zigzag");
 pub const agwpe = @import("bbs").agwpe;
 pub const meshcore = @import("bbs").meshcore;
 pub const signing = @import("bbs").signing;
-pub const message_frame = @import("bbs").message_frame;
+pub const message_frame = @import("bbs").transport.message_frame;
 pub const transport = @import("bbs").transport;
 pub const messaging = @import("bbs").messaging;
+pub const protocol = @import("bbs").protocol;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -31,8 +32,8 @@ pub const default_callsign = "NOCALL";
 pub const default_meshcore_baud = "115200";
 
 /// Maximum input message length in characters (before compression).
-/// Alias for `message_frame.max_body_len`.
-pub const max_message_len: usize = message_frame.max_body_len;
+/// Alias for `protocol.max_body_len`.
+pub const max_message_len: usize = @import("bbs").protocol.max_body_len;
 
 /// Maximum value of a bulletin response id. The id space per bulletin is
 /// 0..1023 (a u10). When a bulletin reaches 1024 responses the reply UI is
@@ -51,8 +52,8 @@ pub const chat_text_len: usize = 256;
 
 /// Maximum chat text length in characters (client-side limit, before
 /// compression). The chat input is capped to this value. Alias for
-/// `message_frame.max_chat_text_len`.
-pub const max_chat_text_len: usize = message_frame.max_chat_text_len;
+/// `protocol.max_chat_text_len`.
+pub const max_chat_text_len: usize = @import("bbs").protocol.max_chat_text_len;
 
 /// Number of recent chat messages the client requests from the BBS in a
 /// `chat_history_request`.
@@ -122,9 +123,9 @@ pub const MsgLogEntry = struct {
 };
 
 /// Returns a 4-byte tag (null-padded) for the message type of a session Message.
-pub fn msgTypeTag(msg: *const messaging.Message) [4]u8 {
+pub fn msgTypeTag(msg_type: protocol.MessageType) [4]u8 {
     var buf: [4]u8 = std.mem.zeroes([4]u8);
-    const tag: []const u8 = switch (msg.msg_type) {
+    const tag: []const u8 = switch (msg_type) {
         .public_key => "KEY",
         .bulletin_request => "BRQ",
         .bulletin => "BUL",

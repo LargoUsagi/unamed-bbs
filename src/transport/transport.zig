@@ -21,6 +21,7 @@ const std = @import("std");
 
 pub const frame = @import("frame.zig");
 pub const incoming = @import("incoming.zig");
+pub const message_frame = @import("message_frame.zig");
 
 const MessageFrame = frame.MessageFrame;
 const MessageType = frame.MessageType;

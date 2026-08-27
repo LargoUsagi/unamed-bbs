@@ -19,6 +19,8 @@
 
 const std = @import("std");
 
+const protocol = @import("../../protocol.zig");
+
 /// Request a paginated list of bulletins from a server.
 pub const BulletinListRequest = struct {
     page: u16,
@@ -43,12 +45,7 @@ pub const BulletinListRequest = struct {
 };
 
 /// Mode for a `bulletin_request`.
-pub const BulletinRequestMode = enum(u8) {
-    /// Send all bulletins with `id > after_id`.
-    tail_after = 0,
-    /// Send all bulletins with `start_id <= id <= end_id`.
-    range = 1,
-};
+pub const BulletinRequestMode = protocol.BulletinRequestMode;
 
 /// Request full bulletin content for a range of bulletin ids. The server
 /// responds by broadcasting individual `bulletin` messages for each matching

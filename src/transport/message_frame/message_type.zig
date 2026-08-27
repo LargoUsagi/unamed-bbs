@@ -10,6 +10,8 @@ const limits = @import("limits.zig");
 
 const max_encode_len = limits.max_encode_len;
 
+const protocol = @import("../../protocol.zig");
+
 const public_key = @import("public_key.zig");
 const public_key_request = @import("public_key_request.zig");
 const bulletin_request_mod = @import("bulletin_request.zig");
@@ -61,30 +63,7 @@ pub const chat_max_text_len = chat_mod.max_chat_text_len;
 /// IMPORTANT: The order of variants here MUST match the field order in the
 /// `Payload` union below — Zig requires union field order to match enum
 /// source order.
-pub const MessageType = enum(u6) {
-    public_key = 2,
-    bulletin_list_request = 3,
-    bulletin = 4,
-    bulletin_list = 5,
-    public_key_request = 6,
-    bulletin_request = 7,
-    registration = 8,
-    registration_ack = 9,
-    bulletin_response = 10,
-    bulletin_response_list = 11,
-    bulletin_response_request = 12,
-    user_info = 13,
-    user_info_request = 14,
-    request_status = 15,
-    packet_request = 16,
-    motd_request = 17,
-    motd = 18,
-    chat = 19,
-    chat_history_request = 20,
-    avatar_update = 21,
-    user_info_list = 22,
-    _,
-};
+pub const MessageType = protocol.MessageType;
 
 /// Typed payload carried by a `MessageFrame`. The active variant is determined
 /// by the `MessageType` tag stored in the frame header.

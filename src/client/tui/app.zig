@@ -24,7 +24,7 @@ const types = @import("types.zig");
 const cli = @import("cli.zig");
 const client_store = @import("../client_store.zig");
 
-const message_frame = types.message_frame;
+const protocol = @import("bbs").protocol;
 
 const connection_mod = @import("connection.zig");
 const identity_mod = @import("identity.zig");
@@ -52,7 +52,7 @@ pub const OverheardNak = inbox_mod.OverheardNak;
 
 /// A server-originated status report awaiting display in a popup modal.
 pub const PendingStatus = struct {
-    outcome: message_frame.RequestOutcome,
+    outcome: protocol.RequestOutcome,
     detail: [256]u8 = std.mem.zeroes([256]u8),
     detail_len: u8 = 0,
 };
@@ -105,7 +105,7 @@ pending_status: ?PendingStatus = null,
 // --- Pending account navigation (after registration ack) ---
 /// When true, a successful `registration_ack` arrived and the model should
 /// navigate to the Account screen on the next tick — but only when the user
-/// was actively on the Register screen. Set by `incoming.handleRegistrationAck`;
+/// was actively on the Register screen. Set by `inbox.handleRegistrationAck`;
 /// the model clears it after handling. When the ack comes from CLI
 /// auto-register (the user is on the Landing screen), the model leaves the
 /// user on Landing — the landing buttons refresh to "Account" via

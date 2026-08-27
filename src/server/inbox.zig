@@ -26,9 +26,12 @@ const Io = std.Io;
 
 const kiss = @import("bbs");
 const messaging = kiss.messaging;
+const message_frame = kiss.transport.message_frame;
+const protocol = kiss.protocol;
 
 const context = @import("context.zig");
 const ServerCtx = context.ServerCtx;
+const RequestMeta = context.RequestMeta;
 
 // Handler imports — the type-specific dispatch targets called by `dispatch`.
 const h_public_key_request = @import("handlers/public_key_request.zig");
@@ -136,27 +139,53 @@ fn nowMs(ctx: *const ServerCtx) u64 {
 
 /// Dispatch a single-part (or reassembled) message to the appropriate handler
 /// based on message type. Called by the RxCore callbacks after the receive
-/// mechanics (guard + reassembly) succeed. Signature verification stays in
-/// each handler (the key source varies by type: sender's stored key, payload
-/// key, or existing key on re-registration), so it is not centralised here —
-/// unlike the client inbox, which verifies all server messages against the
-/// single trusted BBS key.
+/// mechanics (guard + reassembly) succeed. This is the sole server-side
+/// boundary over the wire codec: it decodes the payload into typed fields,
+/// extracts link/signature metadata into a `RequestMeta`, calls the
+/// type-specific handler with plain parameters, and frees the decoded
+/// payload afterwards. Handlers therefore never import `message_frame` or
+/// `messaging` — signature verification uses `meta.signature` +
+/// `meta.payload_bytes`, and responses go out through the typed `outbox.sendX`
+/// helpers.
 fn dispatch(ctx: *const ServerCtx, msg: messaging.Message) !void {
+    const meta = RequestMeta{
+        .callsign = msg.callsignSlice(),
+        .port = msg.port,
+        .signed = msg.signed,
+        .signature = msg.signature,
+        .group_id = msg.group_id,
+        .payload_bytes = msg.payloadSlice(),
+    };
+    const allocator = std.heap.page_allocator;
+
+    const decoded = message_frame.decodePayload(allocator, msg.msg_type, meta.payload_bytes) catch {
+        try ctx.stderr.print("  error: failed to decode {s}\n", .{@tagName(msg.msg_type)});
+        try ctx.stderr.flush();
+        return;
+    };
+    if (decoded == null) {
+        try ctx.stderr.print("  error: malformed {s}\n", .{@tagName(msg.msg_type)});
+        try ctx.stderr.flush();
+        return;
+    }
+    defer message_frame.deinitPayload(allocator, decoded.?);
+
+    const p = decoded.?;
     switch (msg.msg_type) {
-        .public_key_request => try h_public_key_request.handle(ctx, msg),
-        .registration => try h_registration.handle(ctx, msg),
-        .bulletin_list_request => try h_bulletin_list_request.handle(ctx, msg),
-        .bulletin_request => try h_bulletin_request.handle(ctx, msg),
-        .bulletin => try h_bulletin.handle(ctx, msg),
-        .bulletin_response => try h_bulletin_response.handle(ctx, msg),
-        .bulletin_response_request => try h_bulletin_response_request.handle(ctx, msg),
-        .user_info_request => try h_user_info_request.handle(ctx, msg),
-        .packet_request => try h_packet_request.handle(ctx, msg),
-        .motd_request => try h_motd_request.handle(ctx, msg),
-        .motd => try h_motd.handle(ctx, msg),
-        .chat => try h_chat.handle(ctx, msg),
-        .chat_history_request => try h_chat_history_request.handle(ctx, msg),
-        .avatar_update => try h_avatar_update.handle(ctx, msg),
+        .public_key_request => try h_public_key_request.handle(ctx, meta),
+        .registration => try h_registration.handle(ctx, meta, p.registration.handle, p.registration.public_key),
+        .bulletin_list_request => try h_bulletin_list_request.handle(ctx, meta, p.bulletin_list_request.page, p.bulletin_list_request.page_size),
+        .bulletin_request => try h_bulletin_request.handle(ctx, meta, p.bulletin_request.mode, p.bulletin_request.after_id, p.bulletin_request.start_id, p.bulletin_request.end_id),
+        .bulletin => try h_bulletin.handle(ctx, meta, p.bulletin.title, p.bulletin.body),
+        .bulletin_response => try h_bulletin_response.handle(ctx, meta, p.bulletin_response.bulletin_id, p.bulletin_response.body),
+        .bulletin_response_request => try h_bulletin_response_request.handle(ctx, meta, p.bulletin_response_request.bulletin_id, p.bulletin_response_request.mode, p.bulletin_response_request.after_id, p.bulletin_response_request.start_id, p.bulletin_response_request.end_id),
+        .user_info_request => try h_user_info_request.handle(ctx, meta, p.user_info_request.user_ids),
+        .packet_request => try h_packet_request.handle(ctx, meta, p.packet_request.packet_numbers),
+        .motd_request => try h_motd_request.handle(ctx, meta),
+        .motd => try h_motd.handle(ctx, meta, p.motd.text),
+        .chat => try h_chat.handle(ctx, meta, p.chat.text),
+        .chat_history_request => try h_chat_history_request.handle(ctx, meta, p.chat_history_request.count),
+        .avatar_update => try h_avatar_update.handle(ctx, meta, p.avatar_update.avatar),
         else => {},
     }
 }

@@ -11,17 +11,11 @@ const unishox2 = @import("unishox2.zig");
 
 const max_encode_len = limits.max_encode_len;
 
+const protocol = @import("../../protocol.zig");
+
 /// Outcome of a request. Wire values are stored as a single byte.
 /// New values can be appended; existing values must not be renumbered.
-pub const Outcome = enum(u8) {
-    /// The request was processed successfully.
-    success = 1,
-    /// The request failed (e.g. malformed, unauthorized, not found).
-    failure = 2,
-    /// No response data is available for this request (e.g. no bulletins in
-    /// the requested range, no responses for a bulletin).
-    no_data = 3,
-};
+pub const Outcome = protocol.RequestOutcome;
 
 /// A status report from the server about a specific client request.
 pub const RequestStatus = struct {
