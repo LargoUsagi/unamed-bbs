@@ -1,4 +1,5 @@
-//! Landing screen — choose Chat, Bulletins, or Register.
+//! Landing screen — entry point. Shows Login (or Account if already logged
+//! in) and, once logged in, Chat and Bulletins.
 
 const std = @import("std");
 const zz = @import("zigzag");
@@ -168,9 +169,14 @@ fn rebuildForm() void {
     // key) and routes accordingly in the update handler.
     state.form = zz.Form(5).init();
     state.form.title = "";
-    state.form.addField("", &state.chat_button, .{ .required = false });
-    state.form.addField("", &state.bulletins_button, .{ .required = false });
-    if (ctx.identity.my_user_id != null and ctx.identity.key_restored_from_store) {
+    // Chat and Bulletins require a logged-in user (my_user_id set AND a
+    // restored signing key). Hide them until the user logs in.
+    const logged_in = ctx.identity.my_user_id != null and ctx.identity.key_restored_from_store;
+    if (logged_in) {
+        state.form.addField("", &state.chat_button, .{ .required = false });
+        state.form.addField("", &state.bulletins_button, .{ .required = false });
+    }
+    if (logged_in) {
         state.auth_button.label = "Account";
     } else {
         state.auth_button.label = "Login";
@@ -229,7 +235,7 @@ fn setLandingStatus(ctx: *app.AppContext) void {
     } else if (ctx.identity.my_user_id != null) {
         ctx.status = "Key not restored — press Login to re-derive your key.";
     } else {
-        ctx.status = "Choose Chat, Bulletins, or Register.";
+        ctx.status = "Press Login to create an account or sign in.";
     }
 }
 
