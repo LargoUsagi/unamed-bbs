@@ -66,6 +66,11 @@ pub const PendingRegistration = struct {
     /// The handle the user entered, page-allocated. Owned by AppContext and
     /// freed when the pending registration is resolved (sent or timed out).
     handle: []u8,
+    /// The self-identified callsign the user entered, page-allocated. Freed
+    /// alongside `handle`. May be empty (login preserves stored callsign).
+    callsign: []u8,
+    /// `register` or `login` — controls the wire `Registration.mode` byte.
+    mode: protocol.RegistrationMode,
     /// Whether "Remember credentials" was checked; passed to `sendRegistration`.
     remember: bool,
     /// Unix-epoch seconds by which the key must arrive, else the registration
@@ -208,6 +213,7 @@ pub fn deinit(self: *AppContext) void {
     self.async_runner.deinit();
     if (self.pending_registration) |pending| {
         std.heap.page_allocator.free(pending.handle);
+        std.heap.page_allocator.free(pending.callsign);
         self.pending_registration = null;
     }
     self.store.deinit();
@@ -223,6 +229,7 @@ pub fn logout(self: *AppContext) void {
     // Free any pending registration (user logged out / DB deleted).
     if (self.pending_registration) |pending| {
         std.heap.page_allocator.free(pending.handle);
+        std.heap.page_allocator.free(pending.callsign);
         self.pending_registration = null;
     }
 
@@ -301,7 +308,8 @@ pub fn tickAutoRegister(self: *AppContext) void {
 
     if (self.identity.bbs_key != null) {
         // Key known — send the registration now.
-        outbox_mod.sendRegistration(self, handle);
+        const cs = self.connection.callsign_input.value.items;
+        outbox_mod.sendRegistration(self, handle, cs, .register);
         self.identity.auto_register = false;
     } else if (!self.identity.bbs_key_locked) {
         // Key unknown — request it and stash a pending registration.
@@ -310,9 +318,17 @@ pub fn tickAutoRegister(self: *AppContext) void {
             self.identity.auto_register = false;
             return;
         };
+        const cs = self.connection.callsign_input.value.items;
+        const cs_copy = page.dupe(u8, cs) catch {
+            page.free(handle_copy);
+            self.identity.auto_register = false;
+            return;
+        };
         const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(self.io, .real).toSeconds()));
         self.pending_registration = .{
             .handle = handle_copy,
+            .callsign = cs_copy,
+            .mode = .register,
             .remember = false,
             .deadline_secs = now + bbs_key_timeout_secs,
         };
@@ -343,8 +359,9 @@ pub fn tickPendingRegistration(self: *AppContext) void {
 
     // Key arrived — fire the registration now (if the outbox is free).
     if (self.identity.bbs_key != null and !self.outbox.busy) {
-        outbox_mod.sendRegistration(self, pending.handle);
+        outbox_mod.sendRegistration(self, pending.handle, pending.callsign, pending.mode);
         std.heap.page_allocator.free(pending.handle);
+        std.heap.page_allocator.free(pending.callsign);
         self.pending_registration = null;
         return;
     }
@@ -359,6 +376,7 @@ pub fn tickPendingRegistration(self: *AppContext) void {
         ps.detail_len = @intCast(n);
         self.pending_status = ps;
         std.heap.page_allocator.free(pending.handle);
+        std.heap.page_allocator.free(pending.callsign);
         self.pending_registration = null;
         self.status = "Key request timed out.";
         return;

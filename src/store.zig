@@ -6,8 +6,8 @@
 //!   * `records.zig`  — the memory-owning record structs (`User`,
 //!     `BulletinRecord`, `BulletinResponseRecord`, `ChatRecord`,
 //!     `BulletinSummary`) that mirror the replicated tables.
-//!   * `schema.zig`   — `createSchema` and the `migrate*` helpers that
-//!     create/upgrade the replicated tables on both sides.
+//!   * `schema.zig`   — `createSchema` which creates the replicated tables
+//!     on both sides.
 //!   * `queries.zig`  — the shared query helpers (`addBulletin`, `getUserById`,
 //!     `listAllBulletins`, …) that the server and client stores wrap.
 //!
@@ -35,10 +35,6 @@ pub const createBulletinsTable = schema.createBulletinsTable;
 pub const createUsersTable = schema.createUsersTable;
 pub const createBulletinResponsesTable = schema.createBulletinResponsesTable;
 pub const createChatMessagesTable = schema.createChatMessagesTable;
-pub const migrateSchema = schema.migrateSchema;
-pub const migrateBulletinsSchema = schema.migrateBulletinsSchema;
-pub const migrateUsersSchema = schema.migrateUsersSchema;
-pub const migrateBulletinResponsesSchema = schema.migrateBulletinResponsesSchema;
 
 // Query helpers.
 pub const addBulletinWithId = queries.addBulletinWithId;

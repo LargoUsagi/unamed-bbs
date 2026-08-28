@@ -135,3 +135,12 @@ pub const RequestOutcome = enum(u8) {
     /// the requested range, no responses for a bulletin).
     no_data = 3,
 };
+
+/// Whether a `registration` message is a new-account registration or a login
+/// to an existing account. Wire value is a single byte (0 = register, 1 =
+/// login). The server uses this to decide whether to create a new user or
+/// verify against an existing stored key.
+pub const RegistrationMode = enum(u8) {
+    register = 0,
+    login = 1,
+};

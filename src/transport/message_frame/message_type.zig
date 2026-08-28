@@ -45,6 +45,7 @@ pub const BulletinResponseRequest = bulletin_response.BulletinResponseRequest;
 pub const ResponseRequestMode = bulletin_response.ResponseRequestMode;
 pub const Registration = registration.Registration;
 pub const RegistrationAck = registration_ack.RegistrationAck;
+pub const RegistrationMode = @import("../../protocol.zig").RegistrationMode;
 pub const UserInfo = user_info.UserInfo;
 pub const UserInfoRequest = user_info.UserInfoRequest;
 pub const RequestStatus = request_status.RequestStatus;
@@ -460,7 +461,9 @@ test "encodePayload/decodePayload registration round trip" {
     const allocator = std.testing.allocator;
     const pk = [_]u8{0xAB} ** 32;
     const payload: Payload = .{ .registration = .{
+        .mode = .register,
         .handle = "brad",
+        .callsign = "KE8WIF",
         .public_key = pk,
     } };
 
@@ -469,7 +472,9 @@ test "encodePayload/decodePayload registration round trip" {
 
     const decoded = (try decodePayload(allocator, .registration, buf[0..n])) orelse return error.DecodeFailed;
     defer deinitPayload(allocator, decoded);
+    try std.testing.expectEqual(@as(@TypeOf(decoded.registration.mode), .register), decoded.registration.mode);
     try std.testing.expectEqualStrings("brad", decoded.registration.handle);
+    try std.testing.expectEqualStrings("KE8WIF", decoded.registration.callsign);
     try std.testing.expectEqualSlices(u8, &pk, &decoded.registration.public_key);
 }
 

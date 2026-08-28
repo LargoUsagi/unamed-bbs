@@ -328,7 +328,6 @@ pub const Store = struct {
         });
 
         store.createSchema(&self.db);
-        store.migrateSchema(&self.db);
         createServerConfigTable(&self.db);
     }
 };

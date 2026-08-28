@@ -24,6 +24,7 @@ const bulletin_detail = @import("screens/bulletin_detail.zig");
 const compose_bulletin = @import("screens/compose_bulletin.zig");
 const compose_response = @import("screens/compose_response.zig");
 const register = @import("screens/register.zig");
+const login = @import("screens/login.zig");
 const account = @import("screens/account.zig");
 const avatar_edit = @import("screens/avatar_edit.zig");
 const logout_confirm = @import("screens/logout_confirm.zig");
@@ -62,6 +63,7 @@ pub fn init(self: *Model, ctx: *zz.Context) zz.Cmd(Msg) {
     compose_bulletin.init(&self.ctx);
     compose_response.init(&self.ctx);
     register.init(&self.ctx);
+    login.init(&self.ctx);
     account.init(&self.ctx);
     avatar_edit.init(&self.ctx);
     logout_confirm.init(&self.ctx);
@@ -124,17 +126,24 @@ pub fn update(self: *Model, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
             }
 
             // Navigate to the Account screen after a successful registration
-            // ack — but only when the user was on the Register screen (i.e.
-            // they actively registered). Coming from CLI auto-register, the
-            // user starts on the Landing screen and should stay there (the
-            // landing buttons refresh to show "Account" via
-            // `landing.refreshIfStale`). Already-on-Account is a no-op
-            // (defensive against duplicate acks).
+            // or login ack — but only when the user was on the Register or
+            // Login screen (i.e. they actively registered/logged in). Coming
+            // from CLI auto-register, the user starts on the Landing screen
+            // and should stay there (the landing buttons refresh to show
+            // "Account" via `landing.refreshIfStale`). Already-on-Account is
+            // a no-op (defensive against duplicate acks).
             if (self.ctx.pending_account_navigation) {
                 self.ctx.pending_account_navigation = false;
                 if (self.stack.top()) |top| {
-                    if (top.vtable == &register.vtable) {
-                        self.stack.popWithCtx(ctx);
+                    if (top.vtable == &register.vtable or top.vtable == &login.vtable) {
+                        // Pop all the way back to the landing screen, then
+                        // push account. This ensures Escape on the Account
+                        // screen returns to Landing (not to the Login or
+                        // Register screen the user came from).
+                        while (self.stack.top()) |t| {
+                            if (t.vtable == &landing.vtable) break;
+                            self.stack.popWithCtx(ctx);
+                        }
                         self.stack.pushWithCtx(account.screen, ctx) catch {};
                     }
                 }
@@ -194,6 +203,7 @@ pub fn deinit(self: *Model) void {
     compose_bulletin.deinit();
     compose_response.deinit();
     register.deinit();
+    login.deinit();
     account.deinit();
     avatar_edit.deinit();
     logout_confirm.deinit();

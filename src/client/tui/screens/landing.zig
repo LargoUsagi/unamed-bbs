@@ -9,7 +9,7 @@ const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
 const chat_screen = @import("chat.zig");
 const bulletins_screen = @import("bulletins.zig");
-const register_screen = @import("register.zig");
+const login_screen = @import("login.zig");
 const account_screen = @import("account.zig");
 const settings_screen = @import("settings.zig");
 const server_settings_screen = @import("server_settings.zig");
@@ -78,11 +78,11 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
     if (state.auth_button.pressed) {
         state.auth_button.pressed = false;
         // Route to Account when fully logged in (user id + restored key),
-        // otherwise to Register/Login (which re-derives the key).
+        // otherwise to the Login screen (which has a link to Register).
         if (state.ctx.identity.my_user_id != null and state.ctx.identity.key_restored_from_store) {
             return .{ .push = account_screen.screen };
         } else {
-            return .{ .push = register_screen.screen };
+            return .{ .push = login_screen.screen };
         }
     }
     if (state.user_directory_button.pressed) {
@@ -172,10 +172,8 @@ fn rebuildForm() void {
     state.form.addField("", &state.bulletins_button, .{ .required = false });
     if (ctx.identity.my_user_id != null and ctx.identity.key_restored_from_store) {
         state.auth_button.label = "Account";
-    } else if (ctx.identity.my_user_id != null) {
-        state.auth_button.label = "Login";
     } else {
-        state.auth_button.label = "Register";
+        state.auth_button.label = "Login";
     }
     state.form.addField("", &state.auth_button, .{ .required = false });
     if (ctx.identity.my_user_id != null and ctx.identity.bbs_key != null) {

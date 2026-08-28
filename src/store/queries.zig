@@ -392,7 +392,7 @@ pub fn updateUserAvatar(db: *sqlite.Db, id: u16, avatar: []const u8) !void {
 
 /// Look up a user by handle. Caller owns the result and must call deinit().
 pub fn getUserByHandle(db: *sqlite.Db, allocator: std.mem.Allocator, handle: []const u8) ?User {
-    var stmt = db.prepare("SELECT id, handle, callsign, public_key, registered_datetime, is_sysop, avatar FROM users WHERE handle = ?") catch return null;
+    var stmt = db.prepare("SELECT id, handle, callsign, public_key, registered_datetime, is_sysop, avatar FROM users WHERE handle = ? COLLATE NOCASE") catch return null;
     defer stmt.deinit();
     return stmt.oneAlloc(User, allocator, .{}, .{handle}) catch null;
 }

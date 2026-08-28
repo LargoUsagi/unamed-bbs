@@ -173,7 +173,7 @@ fn dispatch(ctx: *const ServerCtx, msg: messaging.Message) !void {
     const p = decoded.?;
     switch (msg.msg_type) {
         .public_key_request => try h_public_key_request.handle(ctx, meta),
-        .registration => try h_registration.handle(ctx, meta, p.registration.handle, p.registration.public_key),
+        .registration => try h_registration.handle(ctx, meta, p.registration.mode, p.registration.handle, p.registration.callsign, p.registration.public_key),
         .bulletin_list_request => try h_bulletin_list_request.handle(ctx, meta, p.bulletin_list_request.page, p.bulletin_list_request.page_size),
         .bulletin_request => try h_bulletin_request.handle(ctx, meta, p.bulletin_request.mode, p.bulletin_request.after_id, p.bulletin_request.start_id, p.bulletin_request.end_id),
         .bulletin => try h_bulletin.handle(ctx, meta, p.bulletin.title, p.bulletin.body),

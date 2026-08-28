@@ -1,26 +1,26 @@
-//! Register screen — register a new Handle (display name) with the BBS server.
+//! Login screen — re-derive the signing key to log into an existing account.
 //!
-//! This screen is purely for **registration** (creating a new account). The
-//! separate login screen (`login.zig`) handles re-deriving the signing key
-//! for an existing account. The user arrives here from the login screen's
-//! "Register" button.
+//! This screen is for **login** (authenticating an existing user). The
+//! separate register screen (`register.zig`) handles creating a new
+//! account. The user arrives here from the landing screen's auth button.
 //!
 //! In this protocol there is no server-side password check: the password is
 //! fed to `signing.KeyPair.fromHandleAndPassword` to deterministically derive
-//! the signing key. The server stores the public key and the user proves
-//! ownership on future logins by signing with the same key.
+//! the signing key. The server verifies the signature against the stored
+//! public key for the existing handle. If the handle doesn't exist, the
+//! server rejects the login.
 //!
-//! The **self-identified callsign** field collects a display callsign that is
-//! stored in the user record (uppercased, max 10 chars). This is distinct
-//! from the link-layer AX.25 callsign used for radio routing.
+//! The "Stay logged in" checkbox controls whether the derived secret key is
+//! persisted to the client store for automatic restore on the next launch
+//! (same as the "Remember credentials" checkbox on the register screen).
 //!
-//! When the user submits and no BBS (server) public key is known, the client
-//! auto-requests one and stashes the registration on `AppContext` as a
-//! `PendingRegistration`. `AppContext.tickPendingRegistration` resolves it
-//! (firing the registration once the key arrives, or surfacing a timeout
-//! error popup after `bbs_key_timeout_secs`). A live "Waiting for server
-//! key... Ns" countdown is rendered while the pending registration is active.
-//! A manual "Request Server Key" button remains as a fallback.
+//! The login wire payload uses `mode = .login` and an empty callsign — the
+//! server preserves the existing stored callsign on login. The link-layer
+//! callsign (from connection settings) is used only for routing the reply.
+//!
+//! When no BBS (server) public key is known, the client auto-requests one
+//! and stashes the login as a `PendingRegistration` (same mechanism as
+//! registration). `AppContext.tickPendingRegistration` resolves it.
 
 const std = @import("std");
 const zz = @import("zigzag");
@@ -33,80 +33,63 @@ const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
 const identity_mod = @import("../identity.zig");
 const settings_screen = @import("settings.zig");
-const login_screen = @import("login.zig");
+const register_screen = @import("register.zig");
 
 /// Maximum handle length, enforced on the client and server.
 pub const max_handle_len: usize = bbs.protocol.max_handle_len;
-/// Maximum callsign length, enforced on the client and server.
-pub const max_callsign_len: usize = bbs.protocol.max_callsign_len;
 
 pub const State = struct {
     ctx: *app.AppContext = undefined,
-    form: zz.Form(8) = undefined,
-    register_handle_input: zz.TextInput = undefined,
-    callsign_input: zz.TextInput = undefined,
+    form: zz.Form(6) = undefined,
+    login_handle_input: zz.TextInput = undefined,
     password_input: zz.TextInput = undefined,
-    confirm_password_input: zz.TextInput = undefined,
     remember_checkbox: zz.Checkbox = undefined,
-    register_button: Button = .{ .label = "Register" },
+    login_button: Button = .{ .label = "Login" },
     request_key_button: Button = .{ .label = "Request Server Key" },
-    back_to_login_button: Button = .{ .label = "Back to Login" },
+    register_button: Button = .{ .label = "Register New Account" },
 };
 
 pub var state = State{};
 
 pub fn init(ctx: *app.AppContext) void {
     state.ctx = ctx;
-    state.register_handle_input = zz.TextInput.init(std.heap.page_allocator);
-    state.register_handle_input.placeholder = "Display name (max 20 chars)";
-    state.register_handle_input.setCharLimit(max_handle_len);
+    state.login_handle_input = zz.TextInput.init(std.heap.page_allocator);
+    state.login_handle_input.placeholder = "Display name (max 20 chars)";
+    state.login_handle_input.setCharLimit(max_handle_len);
 
     // Pre-fill handle from CLI --handle flag.
     if (ctx.identity.prefill_handle) |h| {
-        state.register_handle_input.setValue(h) catch {};
-    }
-
-    state.callsign_input = zz.TextInput.init(std.heap.page_allocator);
-    state.callsign_input.placeholder = "Callsign (e.g. KE8WIF, max 10 chars)";
-    state.callsign_input.setCharLimit(max_callsign_len);
-    // Pre-fill callsign from the connection (link-layer) callsign.
-    if (ctx.connection.callsign_input.value.items.len > 0) {
-        state.callsign_input.setValue(ctx.connection.callsign_input.value.items) catch {};
+        state.login_handle_input.setValue(h) catch {};
     }
 
     state.password_input = zz.TextInput.init(std.heap.page_allocator);
     state.password_input.placeholder = "Password";
     state.password_input.setEchoMode(.password);
 
-    state.confirm_password_input = zz.TextInput.init(std.heap.page_allocator);
-    state.confirm_password_input.placeholder = "Confirm password";
-    state.confirm_password_input.setEchoMode(.password);
-
-    // Pre-fill password + confirm from CLI --key passphrase.
+    // Pre-fill password from CLI --key passphrase.
     if (ctx.identity.prefill_password) |p| {
         state.password_input.setValue(p) catch {};
-        state.confirm_password_input.setValue(p) catch {};
     }
 
-    state.remember_checkbox = zz.Checkbox.init("Remember credentials");
+    state.remember_checkbox = zz.Checkbox.init("Stay logged in");
 
-    state.form = zz.Form(8).init();
-    state.form.title = "Register with BBS";
+    state.form = zz.Form(6).init();
+    state.form.title = "Login";
     state.form.addField("", &state.request_key_button, .{ .required = false });
-    state.form.addField("Handle", &state.register_handle_input, .{ .required = true });
-    state.form.addField("Callsign", &state.callsign_input, .{ .required = false });
+    state.form.addField("Handle", &state.login_handle_input, .{ .required = true });
     if (ctx.identity.key_from_file) {
         // Bring-your-own key: the signing key is already loaded from a file,
-        // so the password/confirm fields (KDF inputs) are not needed.
+        // so the password field (KDF input) is not needed. The handle field
+        // stays at form index 1, so the locked-handle check (active == 1)
+        // still holds.
         state.form.addField("", &state.remember_checkbox, .{ .required = false });
-        state.form.addField("", &state.register_button, .{ .required = false });
+        state.form.addField("", &state.login_button, .{ .required = false });
     } else {
         state.form.addField("Password", &state.password_input, .{ .required = true });
-        state.form.addField("Confirm", &state.confirm_password_input, .{ .required = true });
         state.form.addField("", &state.remember_checkbox, .{ .required = false });
-        state.form.addField("", &state.register_button, .{ .required = false });
+        state.form.addField("", &state.login_button, .{ .required = false });
     }
-    state.form.addField("", &state.back_to_login_button, .{ .required = false });
+    state.form.addField("", &state.register_button, .{ .required = false });
     state.form.submit_keys = &.{zz.KeyEvent.ctrl('s')};
     state.form.cancel_keys = &.{};
     _ = state.form.focus_group.addNextKey(.{ .key = .down });
@@ -116,10 +99,8 @@ pub fn init(ctx: *app.AppContext) void {
 }
 
 pub fn deinit() void {
-    state.register_handle_input.deinit();
-    state.callsign_input.deinit();
+    state.login_handle_input.deinit();
     state.password_input.deinit();
-    state.confirm_password_input.deinit();
 }
 
 fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
@@ -127,10 +108,10 @@ fn onEnter(ptr: *anyopaque, _: *zz.Context) void {
     const ctx = state.ctx;
     state.form.initFocus();
     if (ctx.identity.key_from_file) {
-        ctx.status = "Register — key loaded from file. Enter a handle and press Ctrl+S.";
+        ctx.status = "Login — key loaded from file. Enter a handle and press Ctrl+S.";
     } else {
         ctx.status = if (ctx.connection.isConnected())
-            "Register — enter a handle, callsign, and password, then press Ctrl+S."
+            "Login — enter your handle and password, then press Ctrl+S."
         else
             "Not connected — Ctrl+R for settings to reconnect.";
     }
@@ -156,33 +137,26 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
 
     if (state.form.isSubmitted()) {
         state.form.reset();
-        _ = tryRegister();
+        _ = tryLogin();
         return .none;
     }
 
-    if (state.register_button.pressed) {
-        state.register_button.pressed = false;
-        _ = tryRegister();
+    if (state.login_button.pressed) {
+        state.login_button.pressed = false;
+        _ = tryLogin();
         return .none;
     }
     if (state.request_key_button.pressed) {
         state.request_key_button.pressed = false;
-        // The server-key request is the one public, unsigned request in the
-        // protocol — it doesn't need a signing key, so allow it even before
-        // the user has entered handle + password (this is the bootstrap path
-        // to getting the server key before registration).
-        // Ignore the manual request while a pending registration is already
-        // waiting for the key (it would be redundant / conflict with the
-        // outbox busy flag).
         if (ctx.pending_registration != null) {
             return .none;
         }
         outbox.sendBulletinRequestKey(ctx);
         return .none;
     }
-    if (state.back_to_login_button.pressed) {
-        state.back_to_login_button.pressed = false;
-        return .{ .push = login_screen.screen };
+    if (state.register_button.pressed) {
+        state.register_button.pressed = false;
+        return .{ .push = register_screen.screen };
     }
     return .none;
 }
@@ -202,8 +176,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     help_style = help_style.fg(zz.Color.gray(12));
     help_style = help_style.inline_style(true);
 
-    state.form.title = "Register with BBS";
-    state.register_button.label = "Register";
+    state.form.title = "Login";
+    state.login_button.label = "Login";
 
     const form_view = try state.form.view(alloc);
     defer alloc.free(form_view);
@@ -212,11 +186,11 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const styled_waiting = try renderWaitingLine(alloc, ctx);
     defer alloc.free(styled_waiting);
 
-    const my_id_line = if (ctx.identity.key_from_file)
+    const info_line = if (ctx.identity.key_from_file)
         "Key loaded from file — enter a handle and press Ctrl+S."
     else
-        "Create a new account";
-    const info = try info_style.render(alloc, my_id_line);
+        "Log in to your existing account";
+    const info = try info_style.render(alloc, info_line);
     defer alloc.free(info);
 
     const styled_cs = try renderKeyFingerprint(alloc, ctx);
@@ -224,7 +198,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
 
     const help_text = try std.fmt.allocPrint(
         alloc,
-        "Ctrl+S: Register  Tab/Up/Down: navigate  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
+        "Ctrl+S: Login  Tab/Up/Down: navigate  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
         .{},
     );
     defer alloc.free(help_text);
@@ -256,21 +230,10 @@ fn isTextMutatingKey(k: zz.KeyEvent) bool {
     };
 }
 
-/// Uppercase the callsign input in-place. Called before sending the
-/// registration so the wire payload has an uppercase callsign.
-fn normalizeCallsignInput() void {
-    const items = state.callsign_input.value.items;
-    for (0..items.len) |i| {
-        items[i] = std.ascii.toUpper(items[i]);
-    }
-}
-
-fn tryRegister() bool {
+fn tryLogin() bool {
     const ctx = state.ctx;
-    const handle = state.register_handle_input.value.items;
-    const callsign = state.callsign_input.value.items;
+    const handle = state.login_handle_input.value.items;
     const password = state.password_input.value.items;
-    const confirm = state.confirm_password_input.value.items;
 
     if (handle.len == 0) {
         ctx.status = "Handle is empty.";
@@ -280,20 +243,12 @@ fn tryRegister() bool {
         ctx.status = "Handle exceeds 20 characters.";
         return false;
     }
-    if (callsign.len > max_callsign_len) {
-        ctx.status = "Callsign exceeds 10 characters.";
-        return false;
-    }
-    // The password/confirm fields and the KDF derivation are only used for
+    // The password field and the KDF derivation are only used for
     // passphrase-derived keys. When a key was loaded from a file (--key-file),
     // the keypair is already set and no password is needed.
     if (!ctx.identity.key_from_file) {
         if (password.len < 8) {
             ctx.status = "Password must be at least 8 characters.";
-            return false;
-        }
-        if (!std.mem.eql(u8, password, confirm)) {
-            ctx.status = "Passwords do not match.";
             return false;
         }
 
@@ -303,24 +258,23 @@ fn tryRegister() bool {
         }
     }
 
-    // Uppercase the callsign before sending (server also enforces this, but
-    // we normalize client-side for display consistency).
-    normalizeCallsignInput();
-
     ctx.identity.remember_credentials = state.remember_checkbox.isChecked();
 
+    // Login sends an empty callsign — the server preserves the existing
+    // stored callsign on login mode.
+    const callsign: []const u8 = "";
+
     // If no BBS (server) public key is known, auto-request one and stash the
-    // registration as pending; AppContext.tickPendingRegistration resolves it
-    // (fires the registration once the key arrives, or times out after
+    // login as pending; AppContext.tickPendingRegistration resolves it
+    // (fires the login once the key arrives, or times out after
     // bbs_key_timeout_secs with an error popup). If the key is hard-locked
     // with a bad value we cannot request one — surface an error immediately.
     if (ctx.identity.bbs_key == null) {
         if (ctx.identity.bbs_key_locked) {
-            ctx.status = "Server key is hard-locked (--bbs-key) but invalid; cannot register.";
+            ctx.status = "Server key is hard-locked (--bbs-key) but invalid; cannot login.";
             return false;
         }
         if (ctx.pending_registration != null) {
-            // A pending registration is already in flight; ignore the repeat.
             return false;
         }
         if (!ctx.connection.isConnected()) {
@@ -341,16 +295,16 @@ fn tryRegister() bool {
         ctx.pending_registration = .{
             .handle = handle_copy,
             .callsign = cs_copy,
-            .mode = .register,
+            .mode = .login,
             .remember = state.remember_checkbox.isChecked(),
             .deadline_secs = now + app.bbs_key_timeout_secs,
         };
         outbox.sendBulletinRequestKey(ctx);
-        ctx.status = "Waiting for server key before registration...";
+        ctx.status = "Waiting for server key before login...";
         return true;
     }
 
-    outbox.sendRegistration(ctx, handle, callsign, .register);
+    outbox.sendRegistration(ctx, handle, callsign, .login);
     return true;
 }
 
@@ -369,9 +323,7 @@ fn renderWaitingLine(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]
     return waiting_style.render(alloc, waiting_line);
 }
 
-/// Styled "Callsign: ...  Key: ..." fingerprint line, with a placeholder when
-/// no signing key has been derived yet (makes it clear that credentials are
-/// required before registration can proceed).
+/// Styled "Callsign: ...  Key: ..." fingerprint line.
 fn renderKeyFingerprint(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]const u8 {
     var info_style = zz.Style{};
     info_style = info_style.fg(zz.Color.gray(12));
@@ -381,8 +333,7 @@ fn renderKeyFingerprint(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror
     var cs_owned: bool = false;
     if (ctx.identity.keypair) |kp| {
         const pk = kp.publicKeyBytes();
-        cs_line = try std.fmt.allocPrint(alloc, "Callsign: {s}  Key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
-            state.callsign_input.value.items,
+        cs_line = try std.fmt.allocPrint(alloc, "Key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
             pk[0],
             pk[1],
             pk[2],
@@ -398,7 +349,7 @@ fn renderKeyFingerprint(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror
             "Key: none (key file failed to load)"
         else
             "Key: none (enter handle + password to derive)";
-        cs_line = try std.fmt.allocPrint(alloc, "Callsign: {s}  {s}", .{ state.callsign_input.value.items, no_key_msg });
+        cs_line = try alloc.dupe(u8, no_key_msg);
         cs_owned = true;
     }
     defer if (cs_owned) alloc.free(cs_line);
@@ -414,5 +365,5 @@ pub const vtable = zz.Screen.VTable{
 pub const screen = zz.Screen{
     .ptr = @ptrCast(&state),
     .vtable = &vtable,
-    .title = "Register",
+    .title = "Login",
 };

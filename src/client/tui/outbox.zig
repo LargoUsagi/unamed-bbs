@@ -22,6 +22,7 @@ const bbs = @import("bbs");
 const signing = types.signing;
 const message_frame = types.message_frame;
 const messaging = bbs.messaging;
+const protocol = bbs.protocol;
 const limits = message_frame;
 
 const AppContext = app.AppContext;
@@ -169,7 +170,10 @@ fn freePayloadSlices(payload: message_frame.Payload) void {
             if (b.title.len > 0) page.free(b.title);
             if (b.body.len > 0) page.free(b.body);
         },
-        .registration => |r| if (r.handle.len > 0) page.free(r.handle),
+        .registration => |r| {
+            if (r.handle.len > 0) page.free(r.handle);
+            if (r.callsign.len > 0) page.free(r.callsign);
+        },
         .bulletin_response => |r| if (r.body.len > 0) page.free(r.body),
         .user_info_request => |uir| if (uir.user_ids.len > 0) page.free(uir.user_ids),
         .packet_request => |pr| if (pr.packet_numbers.len > 0) page.free(pr.packet_numbers),
@@ -268,7 +272,9 @@ fn sendTask(args: SendArgs) ?Msg {
 
     const payload = if (args.payload == .registration)
         message_frame.Payload{ .registration = .{
+            .mode = args.payload.registration.mode,
             .handle = args.payload.registration.handle,
+            .callsign = args.payload.registration.callsign,
             .public_key = kp.publicKeyBytes(),
         } }
     else
@@ -442,7 +448,7 @@ pub fn sendMotd(ctx: *AppContext, text: []const u8) void {
     spawnAndSet(ctx, args, "Sending MOTD to server...");
 }
 
-pub fn sendRegistration(ctx: *AppContext, handle: []const u8) void {
+pub fn sendRegistration(ctx: *AppContext, handle: []const u8, callsign: []const u8, mode: protocol.RegistrationMode) void {
     if (handle.len == 0) {
         ctx.status = "Handle is empty.";
         return;
@@ -451,14 +457,13 @@ pub fn sendRegistration(ctx: *AppContext, handle: []const u8) void {
         ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Handle exceeds {d} characters.", .{limits.max_handle_len}) catch "Handle exceeds 20 characters.";
         return;
     }
-    const callsign = ctx.connection.callsign_input.value.items;
-    if (callsign.len == 0) {
-        ctx.status = "Callsign is empty — set it in Settings.";
+    if (callsign.len > limits.max_callsign_len) {
+        ctx.status = std.fmt.allocPrint(std.heap.page_allocator, "Callsign exceeds {d} characters.", .{limits.max_callsign_len}) catch "Callsign exceeds 10 characters.";
         return;
     }
-    // The signing key must have been derived (Register/Login screen or CLI)
+    // The signing key must have been derived (Login/Register screen or CLI)
     // before a registration can be sent. `tickPendingRegistration` and the
-    // register screen both derive the key before calling this, so the
+    // login/register screens both derive the key before calling this, so the
     // keypair is normally non-null here; guard defensively anyway.
     const kp = ctx.identity.keypair orelse {
         ctx.status = "No signing key — enter handle and password to derive one.";
@@ -471,6 +476,12 @@ pub fn sendRegistration(ctx: *AppContext, handle: []const u8) void {
         ctx.status = "Out of memory.";
         return;
     };
+    const callsign_copy = page.dupe(u8, callsign) catch {
+        page.free(handle_copy);
+        page.free(p.host);
+        ctx.status = "Out of memory.";
+        return;
+    };
     const args = SendArgs{
         .transport = ctx.inbox.transport.?,
         .host = p.host,
@@ -479,11 +490,14 @@ pub fn sendRegistration(ctx: *AppContext, handle: []const u8) void {
         .secret_key = p.secret_key,
         .input_len = handle_copy.len,
         .payload = .{ .registration = .{
+            .mode = mode,
             .handle = handle_copy,
+            .callsign = callsign_copy,
             .public_key = kp.publicKeyBytes(),
         } },
     };
-    spawnAndSet(ctx, args, "Registering with BBS...");
+    const status_msg: []const u8 = if (mode == .login) "Logging in..." else "Registering with BBS...";
+    spawnAndSet(ctx, args, status_msg);
 }
 
 pub fn sendBulletin(ctx: *AppContext, title: []const u8, body: []const u8) void {

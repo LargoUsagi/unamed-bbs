@@ -1,4 +1,4 @@
-//! Shared store schema (the replicated tables) and migration helpers.
+//! Shared store schema (the replicated tables) and query helpers.
 //!
 //! Tables declared here (`bulletins`, `users`, `bulletin_responses`,
 //! `chat_messages`) are **replicated tables**: their schema is identical on
@@ -18,8 +18,9 @@
 //!
 //! Users are registered via the `registration` message type and stored in
 //! the `users` table. The `users.id` (a u16) is what `bulletins.user_id`
-//! references. Uniqueness is enforced on `handle` — re-registering the same
-//! handle updates the callsign and public key and returns the existing id.
+//! references. Uniqueness is enforced on `handle` (case-insensitive via
+//! `COLLATE NOCASE`) — registering a duplicate handle is rejected; logging
+//! in with an existing handle authenticates against the stored public key.
 
 const std = @import("std");
 const sqlite = @import("sqlite");
@@ -65,7 +66,7 @@ pub fn createUsersTable(db: *sqlite.Db) void {
         .{},
     ) catch unreachable;
     db.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle ON users(handle)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle ON users(handle COLLATE NOCASE)",
         .{},
         .{},
     ) catch unreachable;
@@ -119,78 +120,6 @@ pub fn createChatMessagesTable(db: *sqlite.Db) void {
     ) catch unreachable;
 }
 
-/// Migrate older schemas on both sides. Kept here so server and client
-/// stores run the same migrations and stay schema-compatible.
-pub fn migrateSchema(db: *sqlite.Db) void {
-    migrateBulletinsSchema(db);
-    migrateUsersSchema(db);
-    migrateBulletinResponsesSchema(db);
-    // The `chat_messages` table was added after the original schema. Create
-    // it here so older databases pick it up on load.
-    createChatMessagesTable(db);
-}
-
-/// Old `bulletins.author_id` was a 32-byte BLOB (raw public key) or used the
-/// `author_id` column name — rebuild with the new `user_id` INTEGER shape.
-pub fn migrateBulletinsSchema(db: *sqlite.Db) void {
-    const Row = struct { sql: []const u8 };
-    var stmt = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bulletins'") catch return;
-    defer stmt.deinit();
-    const row = stmt.oneAlloc(Row, std.heap.page_allocator, .{}, .{}) catch return;
-    const r = row orelse return;
-    defer std.heap.page_allocator.free(r.sql);
-    if (std.mem.indexOf(u8, r.sql, "author_id") != null) {
-        db.exec("DROP TABLE bulletins", .{}, .{}) catch {};
-        db.exec(
-            "CREATE TABLE bulletins (" ++
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, " ++
-                "user_id INTEGER, created_at INTEGER, title TEXT, body BLOB" ++
-                ")",
-            .{},
-            .{},
-        ) catch {};
-        db.exec(
-            "CREATE INDEX IF NOT EXISTS idx_bulletins_created_at ON bulletins(created_at)",
-            .{},
-            .{},
-        ) catch {};
-    }
-}
-
-/// Drop the legacy `authors` table (renamed to `users`) if it exists, and
-/// add the `is_sysop` and `avatar` columns to `users` if they're missing
-/// (older schemas).
-pub fn migrateUsersSchema(db: *sqlite.Db) void {
-    db.exec("DROP TABLE IF EXISTS authors", .{}, .{}) catch {};
-    // Add is_sysop column if it doesn't exist.
-    const Row = struct { sql: []const u8 };
-    var stmt = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'") catch return;
-    defer stmt.deinit();
-    const row = stmt.oneAlloc(Row, std.heap.page_allocator, .{}, .{}) catch return;
-    const r = row orelse return;
-    defer std.heap.page_allocator.free(r.sql);
-    if (std.mem.indexOf(u8, r.sql, "is_sysop") == null) {
-        db.exec("ALTER TABLE users ADD COLUMN is_sysop INTEGER NOT NULL DEFAULT 0", .{}, .{}) catch {};
-    }
-    if (std.mem.indexOf(u8, r.sql, "avatar") == null) {
-        db.exec("ALTER TABLE users ADD COLUMN avatar TEXT NOT NULL DEFAULT ''", .{}, .{}) catch {};
-    }
-}
-
-/// Add `create_datetime` column to `bulletin_responses` if it doesn't exist
-/// (older schemas lacked this column).
-pub fn migrateBulletinResponsesSchema(db: *sqlite.Db) void {
-    const Row = struct { sql: []const u8 };
-    var stmt = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bulletin_responses'") catch return;
-    defer stmt.deinit();
-    const row = stmt.oneAlloc(Row, std.heap.page_allocator, .{}, .{}) catch return;
-    const r = row orelse return;
-    defer std.heap.page_allocator.free(r.sql);
-    if (std.mem.indexOf(u8, r.sql, "create_datetime") == null) {
-        db.exec("ALTER TABLE bulletin_responses ADD COLUMN create_datetime INTEGER NOT NULL DEFAULT 0", .{}, .{}) catch {};
-    }
-}
-
 test "shared schema createSchema is idempotent" {
     var db = sqlite.Db.init(.{
         .mode = sqlite.Db.Mode{ .Memory = {} },
@@ -201,7 +130,6 @@ test "shared schema createSchema is idempotent" {
 
     createSchema(&db);
     createSchema(&db);
-    migrateSchema(&db);
 
     const queries = @import("queries.zig");
     try std.testing.expectEqual(@as(usize, 0), queries.countBulletins(&db));

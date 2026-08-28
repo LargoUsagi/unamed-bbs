@@ -75,6 +75,7 @@ pub const BulletinResponseRequest = message_type.BulletinResponseRequest;
 pub const ResponseRequestMode = message_type.ResponseRequestMode;
 pub const Registration = message_type.Registration;
 pub const RegistrationAck = message_type.RegistrationAck;
+pub const RegistrationMode = message_type.RegistrationMode;
 pub const UserInfo = message_type.UserInfo;
 pub const UserInfoRequest = message_type.UserInfoRequest;
 pub const UserInfoList = message_type.UserInfoList;
