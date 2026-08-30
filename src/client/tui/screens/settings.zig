@@ -136,6 +136,7 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     const ctx = state.ctx;
     const mgr = &ctx.connection;
     const styled_conn = try render.renderConnIndicator(alloc, mgr.isConnected(), mgr.active_kind);
+    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
     const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
 
     // --- Tab strip ---
@@ -188,9 +189,9 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
 
     const inner = try std.fmt.allocPrint(
         alloc,
-        "{s}  {s}\n{s}\n\n{s}\n\n{s}\n\n{s}\n{s}\n\n{s}\n{s}\n\n{s}",
+        "{s} {s}  {s}\n{s}\n\n{s}\n\n{s}\n\n{s}\n{s}\n\n{s}\n{s}\n\n{s}",
         .{
-            styled_conn, styled_status,
+            styled_conn, styled_stats, styled_status,
             tab_strip,   form_view,
             key_info,    in_title,
             in_box,      sent_title,

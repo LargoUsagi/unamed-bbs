@@ -78,6 +78,90 @@ pub const PendingRegistration = struct {
     deadline_secs: u64,
 };
 
+/// One bucket of TX/RX packet counts for the 2-second sparkline window.
+pub const PacketBucket = struct {
+    tx: u32 = 0,
+    rx: u32 = 0,
+};
+
+/// Rolling packet statistics for the status line. 15 buckets × 2 seconds =
+/// 30-second window. The display shows TX|RX counts for the last 10 seconds
+/// (5 buckets) and a sparkline of total (TX+RX) packets per 2-second bucket.
+pub const PacketStats = struct {
+    buckets: [15]PacketBucket = std.mem.zeroes([15]PacketBucket),
+    /// Index of the current (active) bucket being accumulated.
+    current: usize = 0,
+    /// Unix-epoch seconds when the current bucket started. 0 = uninitialized.
+    current_start_secs: u64 = 0,
+    /// Running totals since program start (for reference, not displayed).
+    tx_total: u64 = 0,
+    rx_total: u64 = 0,
+
+    pub const bucket_count: usize = 15;
+    pub const bucket_secs: u64 = 2;
+    /// Number of buckets to sum for the "last 10 seconds" display (5 × 2s = 10s).
+    pub const display_buckets: usize = 5;
+
+    /// Advance the bucket window. Called from `tick()` every 200 ms.
+    pub fn tick(self: *PacketStats, now_secs: u64) void {
+        if (self.current_start_secs == 0) {
+            self.current_start_secs = now_secs;
+            return;
+        }
+        while (now_secs - self.current_start_secs >= bucket_secs) {
+            self.current = (self.current + 1) % bucket_count;
+            self.buckets[self.current] = .{};
+            self.current_start_secs += bucket_secs;
+        }
+    }
+
+    /// Record TX packets (one per logical send).
+    pub fn addTx(self: *PacketStats, n: usize) void {
+        self.buckets[self.current].tx += @intCast(n);
+        self.tx_total += n;
+    }
+
+    /// Record RX packets.
+    pub fn addRx(self: *PacketStats, n: usize) void {
+        self.buckets[self.current].rx += @intCast(n);
+        self.rx_total += n;
+    }
+
+    /// TX packet count in the last `display_buckets` buckets (10 seconds).
+    pub fn txRecent(self: *const PacketStats) u32 {
+        var sum: u32 = 0;
+        var i: usize = self.current;
+        for (0..display_buckets) |_| {
+            sum += self.buckets[i].tx;
+            i = if (i == 0) bucket_count - 1 else i - 1;
+        }
+        return sum;
+    }
+
+    /// RX packet count in the last `display_buckets` buckets (10 seconds).
+    pub fn rxRecent(self: *const PacketStats) u32 {
+        var sum: u32 = 0;
+        var i: usize = self.current;
+        for (0..display_buckets) |_| {
+            sum += self.buckets[i].rx;
+            i = if (i == 0) bucket_count - 1 else i - 1;
+        }
+        return sum;
+    }
+
+    /// Total (TX+RX) per bucket, oldest-to-newst (left-to-right), for the
+    /// 30-second sparkline.
+    pub fn sparklineData(self: *const PacketStats) [bucket_count]u32 {
+        var data: [bucket_count]u32 = std.mem.zeroes([bucket_count]u32);
+        var i: usize = self.current;
+        for (0..bucket_count) |n| {
+            data[bucket_count - 1 - n] = self.buckets[i].tx + self.buckets[i].rx;
+            i = if (i == 0) bucket_count - 1 else i - 1;
+        }
+        return data;
+    }
+};
+
 pub const AppContext = @This();
 
 // --- App-wide fields ---
@@ -146,6 +230,12 @@ inbox: Inbox = .{},
 /// call `outbox.sendBulletin(...)`, `outbox.requestMotd(...)`, etc. — the
 /// single send abstraction for the whole client.
 outbox: Outbox = .{},
+
+// --- Packet statistics (TX/RX counters + RX sparkline history) ---
+/// Running TX and RX packet counts and a rolling 30-second history for
+/// the status-line sparkline. `tick()` rotates the bucket window every
+/// 2 seconds; `inbox.drain` counts RX packets; `send_done` counts TX.
+packet_stats: PacketStats = .{},
 
 // ---------------------------------------------------------------------------
 // Init / deinit
@@ -245,10 +335,18 @@ pub fn logout(self: *AppContext) void {
 pub fn tick(self: *AppContext, zz_ctx: *zz.Context) void {
     _ = zz_ctx;
 
+    // Advance the packet-stats bucket window (2-second buckets, 30-second
+    // rolling window). The seconds come from the same clock as inbox.drain.
+    const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(self.io, .real).toSeconds()));
+    self.packet_stats.tick(now_secs);
+
     // Poll background send/connect results.
     const results = self.async_runner.poll();
     for (results) |r| switch (r) {
-        .send_done => |sr| logs.recordSendResult(self, sr),
+        .send_done => |sr| {
+            logs.recordSendResult(self, sr);
+            self.packet_stats.addTx(1);
+        },
         .connect_done => |cr| connection_mod.handleConnectResult(self, cr),
         else => {},
     };

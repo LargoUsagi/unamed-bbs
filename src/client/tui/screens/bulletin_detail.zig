@@ -102,6 +102,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     _ = ptr;
     const ctx = state.ctx;
     const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
+    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
     const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
     const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
 
@@ -236,12 +237,12 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
 
         const detail = try std.fmt.allocPrint(
             alloc,
-            "{s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}",
-            .{ styled_conn, styled_status, styled_bbs, visible_posts, resp_label, help },
+            "{s} {s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}",
+            .{ styled_conn, styled_stats, styled_status, styled_bbs, visible_posts, resp_label, help },
         );
         return render.fillTerminal(alloc, zz_ctx, detail);
     } else {
-        const detail = try std.fmt.allocPrint(alloc, "{s}  {s}\n{s}\n\n[Bulletin not found]", .{ styled_conn, styled_status, styled_bbs });
+        const detail = try std.fmt.allocPrint(alloc, "{s} {s}  {s}\n{s}\n\n[Bulletin not found]", .{ styled_conn, styled_stats, styled_status, styled_bbs });
         return render.fillTerminal(alloc, zz_ctx, detail);
     }
 }

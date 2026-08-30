@@ -70,6 +70,46 @@ pub fn renderBbsIndicator(
     return s.render(alloc, label);
 }
 
+/// Render the packet statistics: "TX|RX" counts for the last 10 seconds
+/// followed by a 15-bar sparkline of total (TX+RX) packets per 2-second
+/// bucket over the last 30 seconds. The sparkline uses unicode block
+/// characters (▁▂▃▄▅▆▇█) scaled to the max bucket value.
+pub fn renderPacketStats(
+    alloc: std.mem.Allocator,
+    tx_recent: u32,
+    rx_recent: u32,
+    sparkline: [15]u32,
+) ![]const u8 {
+    const glyphs = [_][]const u8{ " ", "\xe2\x96\x81", "\xe2\x96\x82", "\xe2\x96\x83", "\xe2\x96\x84", "\xe2\x96\x85", "\xe2\x96\x86", "\xe2\x96\x87", "\xe2\x96\x88" };
+
+    var max: u32 = 0;
+    for (sparkline) |v| {
+        if (v > max) max = v;
+    }
+
+    // Build the sparkline string. Each glyph is 3 bytes (UTF-8) except the
+    // space (1 byte), so 15 × 3 = 45 bytes max.
+    var sparkline_buf: [45]u8 = undefined;
+    var sl_len: usize = 0;
+    for (sparkline) |v| {
+        const glyph_idx: usize = if (v == 0 or max == 0) 0 else blk: {
+            const scaled = @as(u64, v) * 8 / @as(u64, max);
+            break :blk @intCast(@min(8, @max(1, scaled)));
+        };
+        const g = glyphs[glyph_idx];
+        @memcpy(sparkline_buf[sl_len..sl_len + g.len], g);
+        sl_len += g.len;
+    }
+
+    var s = zz.Style{};
+    s = s.fg(zz.Color.gray(12));
+    s = s.inline_style(true);
+
+    const label = try std.fmt.allocPrint(alloc, "{d}|{d} {s}", .{ tx_recent, rx_recent, sparkline_buf[0..sl_len] });
+    defer alloc.free(label);
+    return s.render(alloc, label);
+}
+
 // ---------------------------------------------------------------------------
 // Layout helpers
 // ---------------------------------------------------------------------------

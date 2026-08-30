@@ -109,13 +109,15 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const ctx = state.ctx;
     const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
     defer alloc.free(styled_conn);
+    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
+    defer alloc.free(styled_stats);
     const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
     defer alloc.free(styled_status);
 
     const form_view = try state.form.view(alloc);
     defer alloc.free(form_view);
 
-    const content = try std.fmt.allocPrint(alloc, "{s}  {s}\n\n{s}", .{ styled_conn, styled_status, form_view });
+    const content = try std.fmt.allocPrint(alloc, "{s} {s}  {s}\n\n{s}", .{ styled_conn, styled_stats, styled_status, form_view });
     defer alloc.free(content);
 
     var box_style = zz.Style{};

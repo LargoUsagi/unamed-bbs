@@ -65,6 +65,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     _ = ptr;
     const ctx = state.ctx;
     const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
+    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
     const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
     const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
 
@@ -88,8 +89,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
 
         const content = try std.fmt.allocPrint(
             alloc,
-            "{s}  {s}\n{s}\n\n{s}\n\n{s}",
-            .{ styled_conn, styled_status, styled_bbs, detail_box, help },
+            "{s} {s}  {s}\n{s}\n\n{s}\n\n{s}",
+            .{ styled_conn, styled_stats, styled_status, styled_bbs, detail_box, help },
         );
         return render.fillTerminal(alloc, zz_ctx, content);
     } else {
@@ -103,8 +104,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
 
         const content = try std.fmt.allocPrint(
             alloc,
-            "{s}  {s}\n{s}\n\n{s}\n\n{s}",
-            .{ styled_conn, styled_status, styled_bbs, not_cached, help },
+            "{s} {s}  {s}\n{s}\n\n{s}\n\n{s}",
+            .{ styled_conn, styled_stats, styled_status, styled_bbs, not_cached, help },
         );
         return render.fillTerminal(alloc, zz_ctx, content);
     }

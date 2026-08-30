@@ -90,6 +90,7 @@ pub const Inbox = struct {
 
         var buf: [16]transport.IncomingMessage = undefined;
         const n = t.drainIncoming(&buf);
+        if (n > 0) ctx.packet_stats.addRx(n);
         const handler = messaging.RxHandler{
             .ctx = @ptrCast(ctx),
             .onMessage = rxMessage,
