@@ -4,12 +4,14 @@ const std = @import("std");
 const zz = @import("zigzag");
 
 const render = @import("../render.zig");
+const TopBar = @import("../widgets/top_bar.zig").TopBar;
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
 const settings_screen = @import("settings.zig");
 
 pub const State = struct {
+    top_bar: TopBar = TopBar.init(true),
     ctx: *app.AppContext = undefined,
     form: zz.Form(3) = undefined,
     bulletin_title_input: zz.TextInput = undefined,
@@ -90,24 +92,19 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const flex_width: u16 = @max(40, @min(avail, 120));
     state.bulletin_body_input.width = flex_width;
 
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
+    const top_bar = try state.top_bar.view(alloc, ctx);
+    defer alloc.free(top_bar);
     const form_view = try state.form.view(alloc);
 
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
+    const help = try render.renderHelp(
         alloc,
         "Ctrl+S: post  Tab/Up/Down: navigate  Enter: newline in body  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
     );
 
     const content = try std.fmt.allocPrint(
         alloc,
-        "{s} {s}  {s}\n{s}\n\n{s}\n\n{s}",
-        .{ styled_conn, styled_stats, styled_status, styled_bbs, form_view, help },
+        "{s}\n\n{s}\n\n{s}",
+        .{ top_bar, form_view, help },
     );
     return render.fillTerminal(alloc, zz_ctx, content);
 }

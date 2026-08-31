@@ -21,12 +21,14 @@ const zz = @import("zigzag");
 const bbs = @import("bbs");
 
 const render = @import("../render.zig");
+const TopBar = @import("../widgets/top_bar.zig").TopBar;
 const avatar_widget = @import("../widgets/avatar.zig");
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
 
 pub const State = struct {
+    top_bar: TopBar = TopBar.init(false),
     ctx: *app.AppContext = undefined,
     form: zz.Form(4) = undefined,
     avatar_input: zz.TextArea = undefined,
@@ -107,17 +109,13 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
     _ = ptr;
     const ctx = state.ctx;
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    defer alloc.free(styled_conn);
-    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
-    defer alloc.free(styled_stats);
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    defer alloc.free(styled_status);
+    const top_bar = try state.top_bar.view(alloc, ctx);
+    defer alloc.free(top_bar);
 
     const form_view = try state.form.view(alloc);
     defer alloc.free(form_view);
 
-    const content = try std.fmt.allocPrint(alloc, "{s} {s}  {s}\n\n{s}", .{ styled_conn, styled_stats, styled_status, form_view });
+    const content = try std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ top_bar, form_view });
     defer alloc.free(content);
 
     var box_style = zz.Style{};

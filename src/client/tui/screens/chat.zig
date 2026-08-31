@@ -13,6 +13,7 @@ const zz = @import("zigzag");
 
 const types = @import("../types.zig");
 const render = @import("../render.zig");
+const TopBar = @import("../widgets/top_bar.zig").TopBar;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
 const logs = @import("../logs.zig");
@@ -20,6 +21,7 @@ const settings_screen = @import("settings.zig");
 
 pub const State = struct {
     ctx: *app.AppContext = undefined,
+    top_bar: TopBar = TopBar.init(true),
     form: zz.Form(1) = undefined,
     message_input: zz.TextArea = undefined,
 };
@@ -102,17 +104,11 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     state.message_input.width = flex_width;
     const log_box_width: u16 = if (zz_ctx.width > 6) zz_ctx.width - 6 else flex_width;
 
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
+    const header = try state.top_bar.view(alloc, ctx);
+    defer alloc.free(header);
     const form_view = try state.form.view(alloc);
-    const header = try std.fmt.allocPrint(alloc, "{s} {s}  {s}\n{s}", .{ styled_conn, styled_stats, styled_status, styled_bbs });
 
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
+    const help = try render.renderHelp(
         alloc,
         "Enter: send  Ctrl+Enter: newline  Ctrl+S: send  Ctrl+H: history  Ctrl+R: settings  Esc: back",
     );

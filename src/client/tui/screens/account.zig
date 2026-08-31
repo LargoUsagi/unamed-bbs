@@ -25,6 +25,7 @@ const bbs = @import("bbs");
 const store = bbs.store;
 
 const render = @import("../render.zig");
+const TopBar = @import("../widgets/top_bar.zig").TopBar;
 const Button = @import("../widgets/button.zig").Button;
 const AvatarPreview = @import("../widgets/avatar_preview.zig").AvatarPreview;
 const app = @import("../app.zig");
@@ -34,6 +35,7 @@ const logout_confirm_screen = @import("logout_confirm.zig");
 const avatar_edit_screen = @import("avatar_edit.zig");
 
 pub const State = struct {
+    top_bar: TopBar = TopBar.init(true),
     ctx: *app.AppContext = undefined,
     form: zz.Form(2) = undefined,
     avatar_preview: AvatarPreview = .{},
@@ -96,14 +98,8 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
     _ = ptr;
     const ctx = state.ctx;
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    defer alloc.free(styled_conn);
-    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
-    defer alloc.free(styled_stats);
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    defer alloc.free(styled_status);
-    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
-    defer alloc.free(styled_bbs);
+    const top_bar = try state.top_bar.view(alloc, ctx);
+    defer alloc.free(top_bar);
 
     var info_style = zz.Style{};
     info_style = info_style.fg(zz.Color.gray(12));
@@ -146,18 +142,15 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const styled_cs = try renderKeyFingerprint(alloc, ctx, info_style);
     defer alloc.free(styled_cs);
 
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
+    const help = try render.renderHelp(
         alloc,
         "Up/Down/Tab: navigate  Enter: edit avatar  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
     );
 
     const content = try std.fmt.allocPrint(
         alloc,
-        "{s} {s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
-        .{ styled_conn, styled_stats, styled_status, styled_bbs, form_view, info, styled_cs, help },
+        "{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
+        .{ top_bar, form_view, info, styled_cs, help },
     );
     defer alloc.free(content);
     return render.fillTerminal(alloc, zz_ctx, content);

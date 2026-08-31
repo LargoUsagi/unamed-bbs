@@ -13,6 +13,7 @@ const zz = @import("zigzag");
 
 const types = @import("../types.zig");
 const render = @import("../render.zig");
+const TopBar = @import("../widgets/top_bar.zig").TopBar;
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
 const connection_mod = @import("../connection.zig");
@@ -21,6 +22,7 @@ const connection_mod = @import("../connection.zig");
 const Tab = enum { agwpe, tcp, meshcore };
 
 pub const State = struct {
+    top_bar: TopBar = TopBar.init(false),
     ctx: *app.AppContext = undefined,
     /// AGWPE form (callsign, host, port, kport, reconnect, disconnect).
     agwpe_form: zz.Form(6) = undefined,
@@ -135,9 +137,8 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     _ = ptr;
     const ctx = state.ctx;
     const mgr = &ctx.connection;
-    const styled_conn = try render.renderConnIndicator(alloc, mgr.isConnected(), mgr.active_kind);
-    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
+    const top_bar = try state.top_bar.view(alloc, ctx);
+    defer alloc.free(top_bar);
 
     // --- Tab strip ---
     const tab_strip = try renderTabStrip(alloc, mgr);
@@ -176,10 +177,7 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     const sent_title = try sent_title_style.render(alloc, "Sent transmissions");
 
     // --- Help ---
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
+    const help = try render.renderHelp(
         alloc,
         if (mgr.connect_locked)
             "Up/Down: navigate  Enter: activate  Ctrl+R: reconnect  Esc: Back  (fields are read-only)"
@@ -189,13 +187,13 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
 
     const inner = try std.fmt.allocPrint(
         alloc,
-        "{s} {s}  {s}\n{s}\n\n{s}\n\n{s}\n\n{s}\n{s}\n\n{s}\n{s}\n\n{s}",
+        "{s}\n{s}\n\n{s}\n\n{s}\n\n{s}\n{s}\n\n{s}\n{s}\n\n{s}",
         .{
-            styled_conn, styled_stats, styled_status,
-            tab_strip,   form_view,
-            key_info,    in_title,
-            in_box,      sent_title,
-            sent_box,    help,
+            top_bar,    tab_strip,
+            form_view,  key_info,
+            in_title,   in_box,
+            sent_title, sent_box,
+            help,
         },
     );
     defer alloc.free(inner);

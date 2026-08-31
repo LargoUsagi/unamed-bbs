@@ -21,6 +21,7 @@ const zz = @import("zigzag");
 
 const types = @import("../types.zig");
 const render = @import("../render.zig");
+const TopBar = @import("../widgets/top_bar.zig").TopBar;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
 const compose_response_screen = @import("compose_response.zig");
@@ -32,6 +33,7 @@ const avatar_widget = @import("../widgets/avatar.zig");
 const sidebar_width: usize = 14;
 
 pub const State = struct {
+    top_bar: TopBar = TopBar.init(true),
     ctx: *app.AppContext = undefined,
     /// Set by the bulletins screen before pushing this screen.
     bulletin_id: u32 = 0,
@@ -101,10 +103,8 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
     _ = ptr;
     const ctx = state.ctx;
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
+    const top_bar = try state.top_bar.view(alloc, ctx);
+    defer alloc.free(top_bar);
 
     const box_width: u16 = if (zz_ctx.width > 6) zz_ctx.width - 6 else 40;
 
@@ -209,10 +209,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         defer alloc.free(resp_label);
 
         // --- Help line ---
-        var help_style = zz.Style{};
-        help_style = help_style.fg(zz.Color.gray(12));
-        help_style = help_style.inline_style(true);
-        const help = try help_style.render(
+        const help = try render.renderHelp(
             alloc,
             "R: body  M: responses  C: reply  Up/Dn: navigate  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
         );
@@ -237,12 +234,12 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
 
         const detail = try std.fmt.allocPrint(
             alloc,
-            "{s} {s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}",
-            .{ styled_conn, styled_stats, styled_status, styled_bbs, visible_posts, resp_label, help },
+            "{s}\n\n{s}\n{s}\n\n{s}",
+            .{ top_bar, visible_posts, resp_label, help },
         );
         return render.fillTerminal(alloc, zz_ctx, detail);
     } else {
-        const detail = try std.fmt.allocPrint(alloc, "{s} {s}  {s}\n{s}\n\n[Bulletin not found]", .{ styled_conn, styled_stats, styled_status, styled_bbs });
+        const detail = try std.fmt.allocPrint(alloc, "{s}\n\n[Bulletin not found]", .{top_bar});
         return render.fillTerminal(alloc, zz_ctx, detail);
     }
 }

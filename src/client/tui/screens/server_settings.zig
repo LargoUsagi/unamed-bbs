@@ -6,12 +6,14 @@ const std = @import("std");
 const zz = @import("zigzag");
 
 const render = @import("../render.zig");
+const TopBar = @import("../widgets/top_bar.zig").TopBar;
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
 const settings_screen = @import("settings.zig");
 
 pub const State = struct {
+    top_bar: TopBar = TopBar.init(true),
     ctx: *app.AppContext = undefined,
     form: zz.Form(2) = undefined,
     motd_input: zz.TextArea = undefined,
@@ -89,14 +91,8 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
     _ = ptr;
     const ctx = state.ctx;
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
-
-    var info_style = zz.Style{};
-    info_style = info_style.fg(zz.Color.gray(12));
-    info_style = info_style.inline_style(true);
+    const top_bar = try state.top_bar.view(alloc, ctx);
+    defer alloc.free(top_bar);
 
     const max_width: u16 = 80;
     const content_width: u16 = if (zz_ctx.width > 4) @min(zz_ctx.width - 4, max_width) else 40;
@@ -114,7 +110,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const form_view = try state.form.view(alloc);
     defer alloc.free(form_view);
 
-    const help = try info_style.render(
+    const help = try render.renderHelp(
         alloc,
         "Ctrl+S: set MOTD  Tab/Up/Down: navigate  Enter: newline  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
     );
@@ -122,14 +118,14 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const content = if (motd_box.len > 0)
         try std.fmt.allocPrint(
             alloc,
-            "{s} {s}  {s}\n{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
-            .{ styled_conn, styled_stats, styled_status, styled_bbs, motd_label, motd_box, form_view, help },
+            "{s}\n\n{s}\n{s}\n\n{s}\n\n{s}",
+            .{ top_bar, motd_label, motd_box, form_view, help },
         )
     else
         try std.fmt.allocPrint(
             alloc,
-            "{s} {s}  {s}\n{s}\n\n{s}\n\n{s}\n\n{s}",
-            .{ styled_conn, styled_stats, styled_status, styled_bbs, motd_label, form_view, help },
+            "{s}\n\n{s}\n\n{s}\n\n{s}",
+            .{ top_bar, motd_label, form_view, help },
         );
     return render.fillTerminal(alloc, zz_ctx, content);
 }

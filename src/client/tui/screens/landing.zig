@@ -6,6 +6,7 @@ const zz = @import("zigzag");
 
 const render = @import("../render.zig");
 const Button = @import("../widgets/button.zig").Button;
+const TopBar = @import("../widgets/top_bar.zig").TopBar;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
 const chat_screen = @import("chat.zig");
@@ -18,6 +19,7 @@ const user_directory_screen = @import("user_directory.zig");
 
 pub const State = struct {
     ctx: *app.AppContext = undefined,
+    top_bar: TopBar = TopBar.init(true),
     form: zz.Form(5) = undefined,
     chat_button: Button = .{ .label = "Chat" },
     bulletins_button: Button = .{ .label = "Bulletins" },
@@ -104,19 +106,15 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
     _ = ptr;
     const ctx = state.ctx;
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
+    const top_bar = try state.top_bar.view(alloc, ctx);
+    defer alloc.free(top_bar);
     const form_view = try state.form.view(alloc);
 
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
+    const help = try render.renderHelp(
         alloc,
         "Tab/Up/Down: navigate  Enter: select  Esc: quit  Ctrl+R: settings  Ctrl+Q: quit",
     );
+    defer alloc.free(help);
 
     // Cap content width at 80 columns.
     const max_width: u16 = 80;
@@ -129,14 +127,14 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const content = if (motd_section.len > 0)
         try std.fmt.allocPrint(
             alloc,
-            "{s} {s}  {s}\n{s}\n\n{s}\n\n{s}\n\n{s}",
-            .{ styled_conn, styled_stats, styled_status, styled_bbs, motd_section, form_view, help },
+            "{s}\n\n{s}\n\n{s}\n\n{s}",
+            .{ top_bar, motd_section, form_view, help },
         )
     else
         try std.fmt.allocPrint(
             alloc,
-            "{s} {s}  {s}\n{s}\n\n{s}\n\n{s}",
-            .{ styled_conn, styled_stats, styled_status, styled_bbs, form_view, help },
+            "{s}\n\n{s}\n\n{s}",
+            .{ top_bar, form_view, help },
         );
     return render.fillTerminal(alloc, zz_ctx, content);
 }

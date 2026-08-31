@@ -1,10 +1,12 @@
-//! Presentation helpers for the TUI: styled status indicators and the
-//! `fillTerminal` layout helper used by non-modal screens to pad their
-//! content to full terminal dimensions.
+//! Presentation helpers for the TUI: styled status indicators, the top-bar
+//! header, the waiting-line and help-text helpers, and the `fillTerminal`
+//! layout helper used by non-modal screens to pad their content to full
+//! terminal dimensions.
 //!
 //! These functions take primitives (not `*AppContext` / `*Model`) so they
 //! have no import dependency on the application state and can be unit-tested
-//! in isolation.
+//! in isolation. The `TopBar` widget (`widgets/top_bar.zig`) wraps these
+//! primitives and does take `*AppContext`.
 
 const std = @import("std");
 const zz = @import("zigzag");
@@ -108,6 +110,15 @@ pub fn renderPacketStats(
     const label = try std.fmt.allocPrint(alloc, "{d}|{d} {s}", .{ tx_recent, rx_recent, sparkline_buf[0..sl_len] });
     defer alloc.free(label);
     return s.render(alloc, label);
+}
+
+/// Render a help-text line in the standard dim-gray style used across all
+/// non-modal screens. Returns a styled string the caller frees.
+pub fn renderHelp(alloc: std.mem.Allocator, text: []const u8) ![]const u8 {
+    var s = zz.Style{};
+    s = s.fg(zz.Color.gray(12));
+    s = s.inline_style(true);
+    return s.render(alloc, text);
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ const std = @import("std");
 const zz = @import("zigzag");
 
 const render = @import("../render.zig");
+const TopBar = @import("../widgets/top_bar.zig").TopBar;
 const Button = @import("../widgets/button.zig").Button;
 const app = @import("../app.zig");
 const outbox = @import("../outbox.zig");
@@ -24,6 +25,7 @@ const settings_screen = @import("settings.zig");
 const min_visible_items: usize = 3;
 
 pub const State = struct {
+    top_bar: TopBar = TopBar.init(true),
     ctx: *app.AppContext = undefined,
     form: zz.Form(3) = undefined,
     request_bulletins_button: Button = .{ .label = "Request Recent" },
@@ -169,10 +171,8 @@ fn update(ptr: *anyopaque, _: *zz.Context, k: zz.KeyEvent) zz.ScreenAction {
 fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) anyerror![]const u8 {
     _ = ptr;
     const ctx = state.ctx;
-    const styled_conn = try render.renderConnIndicator(alloc, ctx.connection.isConnected(), ctx.connection.active_kind);
-    const styled_stats = try render.renderPacketStats(alloc, ctx.packet_stats.txRecent(), ctx.packet_stats.rxRecent(), ctx.packet_stats.sparklineData());
-    const styled_status = try render.renderStatusLine(alloc, ctx.status, ctx.outbox.busy);
-    const styled_bbs = try render.renderBbsIndicator(alloc, ctx.identity.bbs_key, ctx.identity.bbs_key_locked);
+    const top_bar = try state.top_bar.view(alloc, ctx);
+    defer alloc.free(top_bar);
     const form_view = try state.form.view(alloc);
 
     // Cap content width at 80 columns.
@@ -233,18 +233,15 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const bul_box = try renderBulletinsList(alloc, ctx, summaries, start, end, visible_items, content_width);
     defer alloc.free(bul_box);
 
-    var help_style = zz.Style{};
-    help_style = help_style.fg(zz.Color.gray(12));
-    help_style = help_style.inline_style(true);
-    const help = try help_style.render(
+    const help = try render.renderHelp(
         alloc,
         "Tab/Up/Dn: navigate  PgUp/PgDn/Home/End: scroll  Enter: open  Esc: back  Ctrl+R: settings  Ctrl+Q: quit",
     );
 
     const content = try std.fmt.allocPrint(
         alloc,
-        "{s} {s}  {s}\n{s}\n\n{s}\n\n{s}\n{s}\n\n{s}",
-        .{ styled_conn, styled_stats, styled_status, styled_bbs, form_view, bul_title, bul_box, help },
+        "{s}\n\n{s}\n\n{s}\n{s}\n\n{s}",
+        .{ top_bar, form_view, bul_title, bul_box, help },
     );
     return render.fillTerminal(alloc, zz_ctx, content);
 }
