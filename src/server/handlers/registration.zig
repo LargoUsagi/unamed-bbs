@@ -102,7 +102,7 @@ pub fn handle(
         // login. Use the self-identified callsign from the payload if
         // non-empty, otherwise preserve the existing stored callsign.
         const final_cs = if (stored_cs.len != 0) stored_cs else existing.callsign;
-        const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
+        const now_secs: u64 = kiss.time.nowSecs(ctx.io);
         ctx.store.updateUser(existing.id, final_cs, public_key, now_secs, existing.is_sysop, existing.avatar) catch |err| {
             try ctx.stderr.print("  error: failed to update user: {s}\n", .{@errorName(err)});
             try ctx.stderr.flush();
@@ -142,7 +142,7 @@ pub fn handle(
             return;
         }
 
-        const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
+        const now_secs: u64 = kiss.time.nowSecs(ctx.io);
         // The first registered user becomes the sysop.
         const is_sysop = ctx.store.countUsers() == 0;
         // Compute the default avatar once, server-side, from the public key.

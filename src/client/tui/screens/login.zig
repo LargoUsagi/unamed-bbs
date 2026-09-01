@@ -10,9 +10,10 @@
 //! public key for the existing handle. If the handle doesn't exist, the
 //! server rejects the login.
 //!
-//! The "Stay logged in" checkbox controls whether the derived secret key is
-//! persisted to the client store for automatic restore on the next launch
-//! (same as the "Remember credentials" checkbox on the register screen).
+//! The "Remember credentials" checkbox controls whether the derived secret
+//! key is persisted to the client store for automatic restore on the next
+//! launch (same as the "Remember credentials" checkbox on the register
+//! screen).
 //!
 //! The login wire payload uses `mode = .login` and an empty callsign — the
 //! server preserves the existing stored callsign on login. The link-layer
@@ -74,7 +75,7 @@ pub fn init(ctx: *app.AppContext) void {
         state.password_input.setValue(p) catch {};
     }
 
-    state.remember_checkbox = zz.Checkbox.init("Stay logged in");
+    state.remember_checkbox = zz.Checkbox.init("Remember credentials");
 
     state.form = zz.Form(6).init();
     state.form.title = "Login";
@@ -170,10 +171,6 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const top_bar = try state.top_bar.view(alloc, ctx);
     defer alloc.free(top_bar);
 
-    var info_style = zz.Style{};
-    info_style = info_style.fg(zz.Color.gray(12));
-    info_style = info_style.inline_style(true);
-
     state.form.title = "Login";
     state.login_button.label = "Login";
 
@@ -188,10 +185,10 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         "Key loaded from file — enter a handle and press Ctrl+S."
     else
         "Log in to your existing account";
-    const info = try info_style.render(alloc, info_line);
+    const info = try render.dim.render(alloc, info_line);
     defer alloc.free(info);
 
-    const styled_cs = try renderKeyFingerprint(alloc, ctx);
+    const styled_cs = try render.renderKeyLine(alloc, ctx.identity.keypair, "", ctx.identity.key_from_file);
     defer alloc.free(styled_cs);
 
     const help = try render.renderHelp(
@@ -286,7 +283,7 @@ fn tryLogin() bool {
             ctx.status = "Out of memory.";
             return false;
         };
-        const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
+        const now: u64 = bbs.time.nowSecs(ctx.io);
         ctx.pending_registration = .{
             .handle = handle_copy,
             .callsign = cs_copy,
@@ -301,39 +298,6 @@ fn tryLogin() bool {
 
     outbox.sendRegistration(ctx, handle, callsign, .login);
     return true;
-}
-
-/// Styled "Callsign: ...  Key: ..." fingerprint line.
-fn renderKeyFingerprint(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]const u8 {
-    var info_style = zz.Style{};
-    info_style = info_style.fg(zz.Color.gray(12));
-    info_style = info_style.inline_style(true);
-
-    var cs_line: []const u8 = "";
-    var cs_owned: bool = false;
-    if (ctx.identity.keypair) |kp| {
-        const pk = kp.publicKeyBytes();
-        cs_line = try std.fmt.allocPrint(alloc, "Key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
-            pk[0],
-            pk[1],
-            pk[2],
-            pk[3],
-            pk[28],
-            pk[29],
-            pk[30],
-            pk[31],
-        });
-        cs_owned = true;
-    } else {
-        const no_key_msg: []const u8 = if (ctx.identity.key_from_file)
-            "Key: none (key file failed to load)"
-        else
-            "Key: none (enter handle + password to derive)";
-        cs_line = try alloc.dupe(u8, no_key_msg);
-        cs_owned = true;
-    }
-    defer if (cs_owned) alloc.free(cs_line);
-    return info_style.render(alloc, cs_line);
 }
 
 pub const vtable = zz.Screen.VTable{

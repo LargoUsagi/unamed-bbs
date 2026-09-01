@@ -35,13 +35,9 @@ pub const RetransmissionCache = struct {
     entries: [64]RetransmitEntry = std.mem.zeroes([64]RetransmitEntry),
     io: Io = undefined,
 
-    fn nowSec(io: Io) u64 {
-        return @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
-    }
-
     /// Insert a sent frame into the cache, using info from the FrameObserver.
     pub fn insertFrame(self: *RetransmissionCache, io: Io, info: transport_mod.FrameInfo) void {
-        const now = nowSec(io);
+        const now = kiss.time.nowSecs(io);
         for (&self.entries) |*e| {
             if (!e.active) {
                 e.active = true;
@@ -67,7 +63,7 @@ pub const RetransmissionCache = struct {
     /// Look up a frame for retransmission. Returns null if not found, expired,
     /// or within the dedup window.
     pub fn lookup(self: *RetransmissionCache, io: Io, group_id: u4, packet_number: u8) ?*RetransmitEntry {
-        const now = nowSec(io);
+        const now = kiss.time.nowSecs(io);
         for (&self.entries) |*e| {
             if (!e.active) continue;
             if (e.group_id != group_id or e.packet_number != packet_number) continue;

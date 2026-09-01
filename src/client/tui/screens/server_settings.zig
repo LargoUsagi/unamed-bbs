@@ -151,12 +151,8 @@ fn trySetMotd() bool {
 
 /// Styled "Current MOTD:" label (or "Current MOTD: (not set)" when none set).
 fn renderCurrentMotdLabel(alloc: std.mem.Allocator, has_motd: bool) anyerror![]const u8 {
-    var label_style = zz.Style{};
-    label_style = label_style.bold(true);
-    label_style = label_style.fg(zz.Color.cyan);
-    label_style = label_style.inline_style(true);
     const text: []const u8 = if (has_motd) "Current MOTD:" else "Current MOTD: (not set)";
-    return label_style.render(alloc, text);
+    return render.title_cyan.render(alloc, text);
 }
 
 /// Styled bordered box rendering the current MOTD as markdown, or an empty
@@ -169,11 +165,7 @@ fn renderCurrentMotdBox(alloc: std.mem.Allocator, ctx: *app.AppContext, content_
     md.width = inner_width;
     const motd_rendered = md.render(alloc, mt) catch try alloc.dupe(u8, mt);
     defer alloc.free(motd_rendered);
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.cyan);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(box_width);
+    const box_style = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.cyan).paddingAll(1).width(box_width);
     return box_style.render(alloc, motd_rendered);
 }
 

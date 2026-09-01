@@ -62,11 +62,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         return render.fillTerminal(alloc, zz_ctx, "");
     };
 
-    var notice_style = zz.Style{};
-    notice_style = notice_style.bold(true);
-    notice_style = notice_style.inline_style(true);
-    notice_style = notice_style.fg(zz.Color.yellow);
-    const styled_notice = try notice_style.render(alloc, notice);
+    const styled_notice = try render.bold_yellow.render(alloc, notice);
 
     const form_view = try state.form.view(alloc);
     defer alloc.free(form_view);
@@ -75,12 +71,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     defer alloc.free(styled_notice);
     defer alloc.free(content);
 
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.yellow);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(70);
-    const boxed = try box_style.render(alloc, content);
+    const box = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.yellow).paddingAll(1).width(70);
+    const boxed = try box.render(alloc, content);
 
     return render.fillTerminal(alloc, zz_ctx, boxed);
 }

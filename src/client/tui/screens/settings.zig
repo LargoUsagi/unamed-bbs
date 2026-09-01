@@ -157,11 +157,8 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     defer alloc.free(key_info);
 
     // --- Incoming message log ---
-    var in_title_style = zz.Style{};
-    in_title_style = in_title_style.bold(true);
-    in_title_style = in_title_style.fg(zz.Color.magenta);
-    in_title_style = in_title_style.inline_style(true);
-    const in_title = try in_title_style.render(alloc, "Message Log");
+    const in_title = try render.title_magenta.render(alloc, "Message Log");
+    defer alloc.free(in_title);
 
     const in_box = try renderMessageLog(alloc, ctx);
     defer alloc.free(in_box);
@@ -170,11 +167,8 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     const sent_box = try renderSentLog(alloc, ctx);
     defer alloc.free(sent_box);
 
-    var sent_title_style = zz.Style{};
-    sent_title_style = sent_title_style.bold(true);
-    sent_title_style = sent_title_style.fg(zz.Color.blue);
-    sent_title_style = sent_title_style.inline_style(true);
-    const sent_title = try sent_title_style.render(alloc, "Sent transmissions");
+    const sent_title = try render.title_blue.render(alloc, "Sent transmissions");
+    defer alloc.free(sent_title);
 
     // --- Help ---
     const help = try render.renderHelp(
@@ -199,12 +193,8 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     defer alloc.free(inner);
 
     // Wrap in a bordered, padded panel.
-    var panel_style = zz.Style{};
-    panel_style = panel_style.borderAll(zz.Border.rounded);
-    panel_style = panel_style.borderForeground(zz.Color.cyan);
-    panel_style = panel_style.paddingAll(1);
-    panel_style = panel_style.width(80);
-    return panel_style.render(alloc, inner);
+    const panel = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.cyan).paddingAll(1).width(80);
+    return panel.render(alloc, inner);
 }
 
 fn currentForm() *zz.Form(6) {
@@ -350,22 +340,20 @@ fn renderTabStrip(alloc: std.mem.Allocator, mgr: *app.ConnectionManager) anyerro
         else
             "  MeshCore (Serial)  ";
 
-        var tab_style = zz.Style{};
-        tab_style = tab_style.inline_style(true);
         const agwpe_styled = if (state.active_tab == .agwpe)
-            tab_style.fg(zz.Color.cyan).bold(true).render(alloc, agwpe_label) catch try alloc.dupe(u8, agwpe_label)
+            render.title_cyan.render(alloc, agwpe_label) catch try alloc.dupe(u8, agwpe_label)
         else
-            tab_style.fg(zz.Color.gray(12)).render(alloc, agwpe_label) catch try alloc.dupe(u8, agwpe_label);
+            render.dim.render(alloc, agwpe_label) catch try alloc.dupe(u8, agwpe_label);
         defer alloc.free(agwpe_styled);
         const tcp_styled = if (state.active_tab == .tcp)
-            tab_style.fg(zz.Color.cyan).bold(true).render(alloc, tcp_label) catch try alloc.dupe(u8, tcp_label)
+            render.title_cyan.render(alloc, tcp_label) catch try alloc.dupe(u8, tcp_label)
         else
-            tab_style.fg(zz.Color.gray(12)).render(alloc, tcp_label) catch try alloc.dupe(u8, tcp_label);
+            render.dim.render(alloc, tcp_label) catch try alloc.dupe(u8, tcp_label);
         defer alloc.free(tcp_styled);
         const meshcore_styled = if (state.active_tab == .meshcore)
-            tab_style.fg(zz.Color.cyan).bold(true).render(alloc, meshcore_label) catch try alloc.dupe(u8, meshcore_label)
+            render.title_cyan.render(alloc, meshcore_label) catch try alloc.dupe(u8, meshcore_label)
         else
-            tab_style.fg(zz.Color.gray(12)).render(alloc, meshcore_label) catch try alloc.dupe(u8, meshcore_label);
+            render.dim.render(alloc, meshcore_label) catch try alloc.dupe(u8, meshcore_label);
         defer alloc.free(meshcore_styled);
 
         try tab_buf.appendSlice(alloc, agwpe_styled);
@@ -374,33 +362,54 @@ fn renderTabStrip(alloc: std.mem.Allocator, mgr: *app.ConnectionManager) anyerro
         try tab_buf.appendSlice(alloc, "  ");
         try tab_buf.appendSlice(alloc, meshcore_styled);
     } else {
-        var lock_style = zz.Style{};
-        lock_style = lock_style.inline_style(true);
-        lock_style = lock_style.fg(zz.Color.yellow);
         const locked_label = switch (mgr.active_kind) {
             .agwpe => "Transport: AGWPE (locked from CLI \xe2\x80\x94 immutable)",
             .tcp => "Transport: TCP (locked from CLI \xe2\x80\x94 immutable)",
             .meshcore => "Transport: MeshCore (locked from CLI \xe2\x80\x94 immutable)",
         };
-        const styled = lock_style.render(alloc, locked_label) catch try alloc.dupe(u8, locked_label);
+        const styled = render.yellow.render(alloc, locked_label) catch try alloc.dupe(u8, locked_label);
         defer alloc.free(styled);
         try tab_buf.appendSlice(alloc, styled);
     }
     return alloc.dupe(u8, tab_buf.items);
 }
 
-/// "Signing Key: …" line showing the fingerprint of the working signing key,
-/// or a placeholder prompting registration/login when none is derived.
+/// "Signing Key: …" line showing the truncated fingerprint of the working
+/// signing key (or a placeholder prompting registration/login when none is
+/// derived), plus a "BBS Server Key:" line showing the trusted server key
+/// in FULL hex so it can be copied verbatim into `--bbs-key` to hard-lock
+/// future sessions to that specific server. When no server key is known,
+/// the line notes soft-trust mode instead.
 fn renderKeyInfo(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+
     if (ctx.identity.keypair) |kp| {
-        const pk = kp.publicKeyBytes();
-        return std.fmt.allocPrint(alloc, "Signing Key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2} (derived from passphrase)", .{
-            pk[0],          pk[1],          pk[2],          pk[3],
-            pk[pk.len - 4], pk[pk.len - 3], pk[pk.len - 2], pk[pk.len - 1],
-        });
+        const fp = try render.formatKeyHex(alloc, kp.publicKeyBytes(), true);
+        defer alloc.free(fp);
+        const line = try std.fmt.allocPrint(alloc, "Signing Key: {s} (derived from passphrase)", .{fp});
+        defer alloc.free(line);
+        try buf.appendSlice(alloc, line);
     } else {
-        return alloc.dupe(u8, "Signing Key: none — register or log in to derive one");
+        try buf.appendSlice(alloc, "Signing Key: none — register or log in to derive one");
     }
+    try buf.appendSlice(alloc, "\n");
+
+    if (ctx.identity.bbs_key) |bk| {
+        const full = try render.formatKeyHex(alloc, bk, false);
+        defer alloc.free(full);
+        const note: []const u8 = if (ctx.identity.bbs_key_locked)
+            "  (locked via --bbs-key)"
+        else
+            "  (copy into --bbs-key to lock to this server)";
+        const line = try std.fmt.allocPrint(alloc, "BBS Server Key: {s}{s}", .{ full, note });
+        defer alloc.free(line);
+        try buf.appendSlice(alloc, line);
+    } else {
+        try buf.appendSlice(alloc, "BBS Server Key: none (soft-trust — connect to a server to learn its key)");
+    }
+
+    return alloc.dupe(u8, buf.items);
 }
 
 /// Render the incoming-message log as a bordered, padded box (magenta border).
@@ -451,10 +460,7 @@ fn renderMessageLog(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]c
             in_buf.items.len -= 1;
     }
 
-    var in_box_style = zz.Style{};
-    in_box_style = in_box_style.borderAll(zz.Border.rounded);
-    in_box_style = in_box_style.borderForeground(zz.Color.magenta);
-    in_box_style = in_box_style.paddingAll(1);
+    const in_box_style = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.magenta).paddingAll(1);
     return in_box_style.render(alloc, in_buf.items);
 }
 
@@ -476,10 +482,7 @@ fn renderSentLog(alloc: std.mem.Allocator, ctx: *app.AppContext) anyerror![]cons
         }
     }
 
-    var sent_box_style = zz.Style{};
-    sent_box_style = sent_box_style.borderAll(zz.Border.rounded);
-    sent_box_style = sent_box_style.borderForeground(zz.Color.gray(10));
-    sent_box_style = sent_box_style.paddingAll(1);
+    const sent_box_style = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.gray(10)).paddingAll(1);
     return sent_box_style.render(alloc, sent_buf.items);
 }
 

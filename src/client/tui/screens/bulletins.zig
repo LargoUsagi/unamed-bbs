@@ -174,6 +174,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const top_bar = try state.top_bar.view(alloc, ctx);
     defer alloc.free(top_bar);
     const form_view = try state.form.view(alloc);
+    defer alloc.free(form_view);
 
     // Cap content width at 80 columns.
     const max_width: u16 = 80;
@@ -197,7 +198,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const term_height: usize = zz_ctx.height;
     const margin_h: usize = 2;
     const header_h: usize = 3;
-    const form_h: usize = countLines(form_view);
+    const form_h: usize = render.countLines(form_view);
     const title_h: usize = 1;
     const footer_h: usize = 2; // blank line + help line
     const gaps: usize = 1; // blank line between form and title
@@ -214,11 +215,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const start = state.scroll_offset;
     const end = @min(start + visible_items, count);
 
-    var bul_title_style = zz.Style{};
-    bul_title_style = bul_title_style.bold(true);
-    bul_title_style = bul_title_style.fg(zz.Color.cyan);
-    bul_title_style = bul_title_style.inline_style(true);
-    const bul_title = try bul_title_style.render(
+    const bul_title = try render.title_cyan.render(
         alloc,
         if (count == 0)
             try std.fmt.allocPrint(alloc, "Bulletins  (0 cached)", .{})
@@ -244,18 +241,6 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         .{ top_bar, form_view, bul_title, bul_box, help },
     );
     return render.fillTerminal(alloc, zz_ctx, content);
-}
-
-/// Count the number of lines a rendered string occupies (trailing newline
-/// does not add an extra line). Mirrors the helper in `chat.zig`.
-fn countLines(s: []const u8) usize {
-    if (s.len == 0) return 0;
-    var n: usize = 1;
-    for (s) |c| {
-        if (c == '\n') n += 1;
-    }
-    if (s[s.len - 1] == '\n') n -= 1;
-    return n;
 }
 
 /// Called when popping back to this screen from a pushed sub-screen (e.g.
@@ -361,7 +346,7 @@ fn renderBulletinsList(
         // Pad with blank lines so the box height stays fixed when the
         // viewport is shorter than `visible_items` (e.g. the last page of
         // a long list). This keeps the layout stable as the user scrolls.
-        const rendered_lines = if (bul_buf.items.len == 0) 0 else countLines(bul_buf.items);
+        const rendered_lines = if (bul_buf.items.len == 0) 0 else render.countLines(bul_buf.items);
         if (rendered_lines < visible_items) {
             var pad = visible_items - rendered_lines;
             while (pad > 0) : (pad -= 1) {
@@ -370,11 +355,10 @@ fn renderBulletinsList(
         }
     }
 
-    var bul_box_style = zz.Style{};
-    bul_box_style = bul_box_style.borderAll(zz.Border.rounded);
-    bul_box_style = bul_box_style.borderForeground(if (state.list_focused) zz.Color.yellow else zz.Color.cyan);
-    bul_box_style = bul_box_style.paddingAll(1);
-    bul_box_style = bul_box_style.width(content_width);
+    const bul_box_style = (zz.Style{})
+        .borderAll(zz.Border.rounded)
+        .borderForeground(if (state.list_focused) zz.Color.yellow else zz.Color.cyan)
+        .paddingAll(1).width(content_width);
     return bul_box_style.render(alloc, bul_buf.items);
 }
 

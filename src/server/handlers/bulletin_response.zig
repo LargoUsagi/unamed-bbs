@@ -56,7 +56,7 @@ pub fn handle(ctx: *const ServerCtx, meta: RequestMeta, bulletin_id: u32, body: 
 
     // Use the server's current time as the authoritative creation
     // timestamp for the response.
-    const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
+    const now_secs: u64 = kiss.time.nowSecs(ctx.io);
 
     ctx.store.addResponseWithId(bulletin_id, next_id, user.id, now_secs, body) catch |err| {
         try ctx.stderr.print("  error: failed to store response: {s}\n", .{@errorName(err)});
@@ -69,7 +69,7 @@ pub fn handle(ctx: *const ServerCtx, meta: RequestMeta, bulletin_id: u32, body: 
     };
 
     try ctx.stderr.print("  stored: bulletin={d} response_id={d} user={d} body={d}B total={d}\n", .{
-        bulletin_id, next_id, user.id, body.len,
+        bulletin_id,                           next_id, user.id, body.len,
         ctx.store.countResponses(bulletin_id),
     });
     try ctx.stderr.flush();

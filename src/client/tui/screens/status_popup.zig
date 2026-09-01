@@ -66,10 +66,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         .no_data => "No Data",
     };
 
-    var outcome_style = zz.Style{};
-    outcome_style = outcome_style.bold(true);
-    outcome_style = outcome_style.inline_style(true);
-    outcome_style = outcome_style.fg(switch (ps.outcome) {
+    const outcome_style = (zz.Style{}).bold(true).inline_style(true).fg(switch (ps.outcome) {
         .success => zz.Color.green,
         .failure => zz.Color.red,
         .no_data => zz.Color.yellow,
@@ -90,12 +87,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const content = try std.fmt.allocPrint(alloc, "Server status: {s}\n\n{s}\n\n{s}", .{ styled_outcome, detail_line, form_view });
     defer alloc.free(content);
 
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.cyan);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(60);
-    const boxed = try box_style.render(alloc, content);
+    const box = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.cyan).paddingAll(1).width(60);
+    const boxed = try box.render(alloc, content);
     defer alloc.free(boxed);
 
     return render.fillTerminal(alloc, zz_ctx, boxed);

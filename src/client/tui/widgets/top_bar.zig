@@ -11,6 +11,7 @@ const zz = @import("zigzag");
 
 const app = @import("../app.zig");
 const render = @import("../render.zig");
+const time = @import("bbs").time;
 
 pub const TopBar = struct {
     /// When true, the BBS key indicator is rendered on a second line.
@@ -48,13 +49,10 @@ pub const TopBar = struct {
 /// register screens.
 pub fn renderWaitingLine(alloc: std.mem.Allocator, ctx: *const app.AppContext) anyerror![]const u8 {
     if (ctx.pending_registration == null) return try alloc.dupe(u8, "");
-    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
+    const now: u64 = time.nowSecs(ctx.io);
     const remaining: i64 = @as(i64, @intCast(ctx.pending_registration.?.deadline_secs)) - @as(i64, @intCast(now));
     const secs: u64 = if (remaining > 0) @intCast(remaining) else 0;
     const waiting_line = try std.fmt.allocPrint(alloc, "Waiting for server key... {d}s", .{secs});
     defer alloc.free(waiting_line);
-    var waiting_style = zz.Style{};
-    waiting_style = waiting_style.fg(zz.Color.yellow);
-    waiting_style = waiting_style.inline_style(true);
-    return waiting_style.render(alloc, waiting_line);
+    return render.yellow.render(alloc, waiting_line);
 }

@@ -129,10 +129,6 @@ fn renderCachedUserBox(
     user: *const client_store.User,
     box_width: u16,
 ) anyerror![]const u8 {
-    var info_style = zz.Style{};
-    info_style = info_style.fg(zz.Color.gray(14));
-    info_style = info_style.inline_style(true);
-
     const avatar = try avatar_widget.render(alloc, user.avatar);
     defer alloc.free(avatar);
     const reg_date = try formatDateTime(alloc, user.registered_datetime);
@@ -144,34 +140,25 @@ fn renderCachedUserBox(
         "";
     const sysop_tag: []const u8 = if (user.is_sysop) "  (sysop)" else "";
 
-    const pk = user.public_key;
+    const fp = try render.formatKeyHex(alloc, user.public_key, true);
+    defer alloc.free(fp);
     const profile = try std.fmt.allocPrint(
         alloc,
-        "User ID: #{d}{s}{s}\nHandle: {s}\nCallsign: {s}\nRegistered: {s}\nKey: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2}",
-        .{
-            user.id,     me_mark,       sysop_tag,
-            user.handle, user.callsign, reg_date,
-            pk[0],       pk[1],         pk[2],
-            pk[3],       pk[28],        pk[29],
-            pk[30],      pk[31],
-        },
+        "User ID: #{d}{s}{s}\nHandle: {s}\nCallsign: {s}\nRegistered: {s}\nKey: {s}",
+        .{ user.id, me_mark, sysop_tag, user.handle, user.callsign, reg_date, fp },
     );
     defer alloc.free(profile);
-    const styled_profile = try info_style.render(alloc, profile);
+    const styled_profile = try render.dim.render(alloc, profile);
     defer alloc.free(styled_profile);
 
-    const styled_avatar = try info_style.render(alloc, avatar);
+    const styled_avatar = try render.dim.render(alloc, avatar);
     defer alloc.free(styled_avatar);
 
     const joined = try zz.join.horizontal(alloc, .top, &.{ styled_avatar, styled_profile });
     defer alloc.free(joined);
 
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.cyan);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(box_width);
-    return box_style.render(alloc, joined);
+    const box = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.cyan).paddingAll(1).width(box_width);
+    return box.render(alloc, joined);
 }
 
 /// "User #N not cached — press R to request." line for the not-cached branch.

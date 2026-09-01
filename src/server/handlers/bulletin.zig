@@ -41,7 +41,7 @@ pub fn handle(ctx: *const ServerCtx, meta: RequestMeta, title: []const u8, body:
 
     // Use the server's current time as the authoritative creation
     // timestamp — the client's value is ignored.
-    const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
+    const now_secs: u64 = kiss.time.nowSecs(ctx.io);
 
     const id = ctx.store.add(user.id, now_secs, title, body) catch |err| {
         try ctx.stderr.print("  error: failed to store bulletin: {s}\n", .{@errorName(err)});

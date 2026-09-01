@@ -14,6 +14,7 @@
 //!     (`store/records.zig`, `store/schema.zig`, `store/queries.zig`)
 //!   * `crypto/signing` — Ed25519 signing, key loading, key derivation
 //!   * `util/avatar` — ASCII art avatar generation
+//!   * `util/time` — wall-clock seconds helper (`nowSecs`)
 //!   * `transport.message_frame` — typed application payloads + wire codec
 //!     (depends on `transport/message_frame/unishox2.zig` for on-the-wire
 //!     compression; re-exports the `protocol` constants via `limits.zig`)
@@ -38,6 +39,7 @@ pub const messaging = @import("transport/messaging.zig");
 pub const signing = @import("crypto/signing.zig");
 pub const store = @import("store.zig");
 pub const avatar = @import("util/avatar.zig");
+pub const time = @import("util/time.zig");
 
 // Reference every shared submodule so `zig build test`'s `mod_tests`
 // executable (rooted here) compiles and runs their `test {}` blocks.

@@ -75,10 +75,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const form_view = try state.form.view(alloc);
     defer alloc.free(form_view);
 
-    var info_style = zz.Style{};
-    info_style = info_style.fg(zz.Color.gray(12));
-    info_style = info_style.inline_style(true);
-    const hint = try info_style.render(
+    const hint = try render.dim.render(
         alloc,
         "Leave To ID blank for a single bulletin.  Max range: 50.",
     );
@@ -87,12 +84,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const content = try std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ form_view, hint });
     defer alloc.free(content);
 
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.cyan);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(60);
-    const boxed = try box_style.render(alloc, content);
+    const box = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.cyan).paddingAll(1).width(60);
+    const boxed = try box.render(alloc, content);
     defer alloc.free(boxed);
 
     return render.fillTerminal(alloc, zz_ctx, boxed);

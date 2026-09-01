@@ -134,7 +134,7 @@ fn logHandlerError(ctx: *const ServerCtx, err: anyerror) void {
 }
 
 fn nowMs(ctx: *const ServerCtx) u64 {
-    return @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()) * 1000);
+    return kiss.time.nowSecs(ctx.io) * 1000;
 }
 
 /// Dispatch a single-part (or reassembled) message to the appropriate handler

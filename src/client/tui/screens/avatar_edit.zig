@@ -118,11 +118,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const content = try std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ top_bar, form_view });
     defer alloc.free(content);
 
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.cyan);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(60);
+    const box_style = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.cyan).paddingAll(1).width(60);
     const boxed = try box_style.render(alloc, content);
     defer alloc.free(boxed);
 

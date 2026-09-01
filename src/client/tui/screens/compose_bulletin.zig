@@ -95,6 +95,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const top_bar = try state.top_bar.view(alloc, ctx);
     defer alloc.free(top_bar);
     const form_view = try state.form.view(alloc);
+    defer alloc.free(form_view);
 
     const help = try render.renderHelp(
         alloc,

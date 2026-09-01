@@ -61,9 +61,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const form_view = try state.form.view(alloc);
     defer alloc.free(form_view);
 
-    var warn_style = zz.Style{};
-    warn_style = warn_style.fg(zz.Color.red);
-    warn_style = warn_style.inline_style(true);
+    const warn_style = (zz.Style{}).fg(zz.Color.red).inline_style(true);
     const warning = try warn_style.render(
         alloc,
         "Logout will delete local data and exit.\nAll cached bulletins, responses, and info will be lost.",
@@ -72,12 +70,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
 
     const content = try std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ warning, form_view });
 
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.yellow);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(60);
-    const boxed = try box_style.render(alloc, content);
+    const box = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.yellow).paddingAll(1).width(60);
+    const boxed = try box.render(alloc, content);
     defer alloc.free(boxed);
 
     return render.fillTerminal(alloc, zz_ctx, boxed);

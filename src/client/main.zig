@@ -289,6 +289,13 @@ test "simple test" {
     try std.testing.expectEqual(@as(i32, 42), list.pop());
 }
 
+test {
+    std.testing.refAllDecls(@import("client_store.zig"));
+    std.testing.refAllDecls(@import("tui/connection.zig"));
+    std.testing.refAllDecls(@import("tui/render.zig"));
+    std.testing.refAllDecls(@import("tui/widgets/avatar_preview.zig"));
+}
+
 test "fuzz example" {
     try std.testing.fuzz({}, testOne, .{});
 }

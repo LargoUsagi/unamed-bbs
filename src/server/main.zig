@@ -156,7 +156,7 @@ pub fn main(init: std.process.Init) !void {
     if (kp) |k| {
         const pk = k.publicKeyBytes();
         try stderr.print("server public key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2}\n", .{
-            pk[0], pk[1], pk[2], pk[3],
+            pk[0],  pk[1],  pk[2],  pk[3],
             pk[28], pk[29], pk[30], pk[31],
         });
     }
@@ -248,7 +248,12 @@ pub fn main(init: std.process.Init) !void {
         if (spec.kind == .agwpe) {
             const name = std.fmt.allocPrint(arena, "agwpe:{s}:{d}", .{ spec.host, spec.port }) catch "agwpe";
             const pool_id = pool.add(transports.wrapAgwpe(
-                @intCast(agwpe_pool_count), i, name, &agwpe_conns[i], io, spec.kport,
+                @intCast(agwpe_pool_count),
+                i,
+                name,
+                &agwpe_conns[i],
+                io,
+                spec.kport,
             )) orelse break;
             agwpe_slot_map[agwpe_pool_count] = i;
             agwpe_pool_count += 1;
@@ -263,7 +268,13 @@ pub fn main(init: std.process.Init) !void {
         if (spec.kind == .tcp) {
             const name = std.fmt.allocPrint(arena, "tcp-connect:{s}:{d}", .{ spec.host, spec.port }) catch "tcp-connect";
             const pool_id = pool.add(transports.wrapTcp(
-                @intCast(tcp_connect_pool_count), .tcp_connect, i, name, &tcp_conns[i], io, 0,
+                @intCast(tcp_connect_pool_count),
+                .tcp_connect,
+                i,
+                name,
+                &tcp_conns[i],
+                io,
+                0,
             )) orelse break;
             tcp_connect_slot_map[tcp_connect_pool_count - agwpe_pool_count] = i;
             tcp_slots_used[i] = true;
@@ -279,7 +290,12 @@ pub fn main(init: std.process.Init) !void {
             const name = std.fmt.allocPrint(arena, "meshcore:{s}", .{spec.host}) catch "meshcore";
             const free_id = pool.findFreeSlot() orelse break;
             _ = pool.addAt(free_id, transports.wrapMeshcore(
-                free_id, i, name, &meshcore_conns[i], io, 0,
+                free_id,
+                i,
+                name,
+                &meshcore_conns[i],
+                io,
+                0,
             ));
         }
     }
@@ -337,7 +353,7 @@ pub fn main(init: std.process.Init) !void {
             };
             if (agwpe_conns[i].isConnected()) continue;
 
-            const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+            const now: u64 = kiss.time.nowSecs(io);
             if (now - last_reconnect[i] < retry_delay_sec) continue;
             last_reconnect[i] = now;
 
@@ -364,7 +380,7 @@ pub fn main(init: std.process.Init) !void {
             if (spec.kind != .tcp) continue;
             if (tcp_conns[i].isConnected()) continue;
 
-            const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+            const now: u64 = kiss.time.nowSecs(io);
             if (now - last_tcp_reconnect[i] < retry_delay_sec) continue;
             last_tcp_reconnect[i] = now;
 
@@ -386,7 +402,7 @@ pub fn main(init: std.process.Init) !void {
             if (spec.kind != .meshcore) continue;
             if (meshcore_conns[i].isConnected()) continue;
 
-            const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+            const now: u64 = kiss.time.nowSecs(io);
             if (now - last_meshcore_reconnect[i] < retry_delay_sec) continue;
             last_meshcore_reconnect[i] = now;
 
@@ -477,7 +493,7 @@ pub fn main(init: std.process.Init) !void {
 
         // --- Heartbeat: per-link beacon for silent beacon-capable radios ---
         {
-            const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+            const now: u64 = kiss.time.nowSecs(io);
             const seconds_into_hour = now % 3600;
             const window_start = now - (seconds_into_hour % beacon_window_sec);
             var id: TransportId = 0;
@@ -517,7 +533,7 @@ fn poolIdForKindSlot(pool: *TransportPool, kind: transports.TransportKind, slot_
 fn beaconNow(ctx: *const ServerCtx, id: TransportId, io: Io) void {
     outbox.sendHeartbeat(ctx, Route.onTransport(id)) catch {};
     if (ctx.pool.get(id)) |t| {
-        t.last_tx_sec = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+        t.last_tx_sec = kiss.time.nowSecs(io);
     }
 }
 

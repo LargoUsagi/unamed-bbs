@@ -32,6 +32,7 @@ const buffers_mod = @import("buffers.zig");
 const outbox_mod = @import("outbox.zig");
 const logs = @import("logs.zig");
 const inbox_mod = @import("inbox.zig");
+const time = @import("bbs").time;
 
 pub const ConnectionManager = connection_mod.ConnectionManager;
 pub const Identity = identity_mod.Identity;
@@ -337,7 +338,7 @@ pub fn tick(self: *AppContext, zz_ctx: *zz.Context) void {
 
     // Advance the packet-stats bucket window (2-second buckets, 30-second
     // rolling window). The seconds come from the same clock as inbox.drain.
-    const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(self.io, .real).toSeconds()));
+    const now_secs: u64 = time.nowSecs(self.io);
     self.packet_stats.tick(now_secs);
 
     // Poll background send/connect results.
@@ -422,7 +423,7 @@ pub fn tickAutoRegister(self: *AppContext) void {
             self.identity.auto_register = false;
             return;
         };
-        const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(self.io, .real).toSeconds()));
+        const now: u64 = time.nowSecs(self.io);
         self.pending_registration = .{
             .handle = handle_copy,
             .callsign = cs_copy,
@@ -465,7 +466,7 @@ pub fn tickPendingRegistration(self: *AppContext) void {
     }
 
     // Deadline passed — surface a timeout error popup and abort.
-    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(self.io, .real).toSeconds()));
+    const now: u64 = time.nowSecs(self.io);
     if (now >= pending.deadline_secs) {
         var ps = PendingStatus{ .outcome = .failure };
         const msg = "Server did not respond to key request (timeout).";

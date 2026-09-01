@@ -403,7 +403,7 @@ pub fn requestMotd(ctx: *AppContext) void {
     // No MOTD request can be signed without a derived signing key.
     if (ctx.identity.keypair == null) return;
 
-    const now = @as(u64, @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds())));
+    const now: u64 = bbs.time.nowSecs(ctx.io);
     if (now >= ctx.motd_timestamp) {
         if (now - ctx.motd_timestamp < motd_ttl) return;
     } else {

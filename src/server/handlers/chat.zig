@@ -50,7 +50,7 @@ pub fn handle(ctx: *const ServerCtx, meta: RequestMeta, text: []const u8) !void 
 
     // The server stamps the message with the current epoch time, which
     // is also the primary key in the chat_messages table.
-    const now_secs: u64 = @intCast(@max(0, std.Io.Timestamp.now(ctx.io, .real).toSeconds()));
+    const now_secs: u64 = kiss.time.nowSecs(ctx.io);
 
     ctx.store.addChatMessage(now_secs, user.id, text) catch |err| {
         try ctx.stderr.print("  error: failed to store chat: {s}\n", .{@errorName(err)});

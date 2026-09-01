@@ -147,7 +147,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const term_height: usize = zz_ctx.height;
     const margin_h: usize = 2;
     const header_h: usize = 3;
-    const form_h: usize = countLines(form_view);
+    const form_h: usize = render.countLines(form_view);
     const title_h: usize = 1;
     const footer_h: usize = 2; // blank line + help line
     const gaps: usize = 1; // blank line between box and form
@@ -164,11 +164,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const start = state.scroll_offset;
     const end = @min(start + visible_items, count);
 
-    var title_style = zz.Style{};
-    title_style = title_style.bold(true);
-    title_style = title_style.fg(zz.Color.cyan);
-    title_style = title_style.inline_style(true);
-    const dir_title = try title_style.render(
+    const dir_title = try render.title_cyan.render(
         alloc,
         if (count == 0)
             try std.fmt.allocPrint(alloc, "User Directory  (0 cached)", .{})
@@ -212,19 +208,6 @@ fn tryRequest() bool {
     const ids = [_]u16{uid};
     outbox.sendUserInfoRequest(ctx, &ids);
     return ctx.outbox.busy;
-}
-
-/// Count the number of lines a rendered string occupies (trailing newline
-/// does not add an extra line). Mirrors the helper in `bulletins.zig` /
-/// `chat.zig`.
-fn countLines(s: []const u8) usize {
-    if (s.len == 0) return 0;
-    var n: usize = 1;
-    for (s) |c| {
-        if (c == '\n') n += 1;
-    }
-    if (s[s.len - 1] == '\n') n -= 1;
-    return n;
 }
 
 /// Handle a navigation key while the list is focused: Tab returns to the form,
@@ -347,7 +330,7 @@ fn renderUserList(
         // Pad with blank lines so the box height stays fixed when the
         // viewport is shorter than `visible_items` (e.g. the last page of
         // a long list). This keeps the layout stable as the user scrolls.
-        const rendered_lines = if (buf.items.len == 0) 0 else countLines(buf.items);
+        const rendered_lines = if (buf.items.len == 0) 0 else render.countLines(buf.items);
         if (rendered_lines < visible_items) {
             var pad = visible_items - rendered_lines;
             while (pad > 0) : (pad -= 1) {
@@ -356,11 +339,7 @@ fn renderUserList(
         }
     }
 
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(if (state.list_focused) zz.Color.yellow else zz.Color.cyan);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(content_width);
+    const box_style = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(if (state.list_focused) zz.Color.yellow else zz.Color.cyan).paddingAll(1).width(content_width);
     return box_style.render(alloc, buf.items);
 }
 

@@ -95,6 +95,7 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     const top_bar = try state.top_bar.view(alloc, ctx);
     defer alloc.free(top_bar);
     const form_view = try state.form.view(alloc);
+    defer alloc.free(form_view);
 
     const help = try render.renderHelp(
         alloc,
@@ -108,12 +109,8 @@ fn view(ptr: *anyopaque, _: *const zz.Context, alloc: std.mem.Allocator) anyerro
     );
     defer alloc.free(inner);
 
-    var panel_style = zz.Style{};
-    panel_style = panel_style.borderAll(zz.Border.rounded);
-    panel_style = panel_style.borderForeground(zz.Color.cyan);
-    panel_style = panel_style.paddingAll(1);
-    panel_style = panel_style.width(80);
-    return panel_style.render(alloc, inner);
+    const panel = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.cyan).paddingAll(1).width(80);
+    return panel.render(alloc, inner);
 }
 
 fn postResponse() bool {

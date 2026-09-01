@@ -23,10 +23,7 @@ pub const Button = struct {
 
     pub fn view(self: *const Button, allocator: std.mem.Allocator) ![]const u8 {
         if (self.focused) {
-            var s = zz.Style{};
-            s = s.reverse(true);
-            s = s.bold(true);
-            s = s.inline_style(true);
+            const s = (zz.Style{}).reverse(true).bold(true).inline_style(true);
             const label = try std.fmt.allocPrint(allocator, "[ {s} ]", .{self.label});
             defer allocator.free(label);
             return s.render(allocator, label);

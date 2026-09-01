@@ -101,10 +101,6 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const top_bar = try state.top_bar.view(alloc, ctx);
     defer alloc.free(top_bar);
 
-    var info_style = zz.Style{};
-    info_style = info_style.fg(zz.Color.gray(12));
-    info_style = info_style.inline_style(true);
-
     // Look up the user info from the local cache and borrow the avatar for
     // the preview. The borrow lives until after `form.view` returns, so the
     // `defer mut_user.deinit(...)` must be scoped to this function — keep
@@ -136,10 +132,10 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const form_view = try state.form.view(alloc);
     defer alloc.free(form_view);
 
-    const info = try info_style.render(alloc, user_info_line);
+    const info = try render.dim.render(alloc, user_info_line);
     defer alloc.free(info);
 
-    const styled_cs = try renderKeyFingerprint(alloc, ctx, info_style);
+    const styled_cs = try render.renderKeyLine(alloc, ctx.identity.keypair, ctx.connection.callsign_input.value.items, ctx.identity.key_from_file);
     defer alloc.free(styled_cs);
 
     const help = try render.renderHelp(
@@ -154,33 +150,6 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     );
     defer alloc.free(content);
     return render.fillTerminal(alloc, zz_ctx, content);
-}
-
-/// Styled "Callsign: ...  Key: ..." fingerprint line for the working signing
-/// key. Falls back to "Key: none" when the keypair is missing (e.g. logout).
-fn renderKeyFingerprint(alloc: std.mem.Allocator, ctx: *app.AppContext, info_style: zz.Style) anyerror![]const u8 {
-    var cs_line: []const u8 = "";
-    var cs_owned: bool = false;
-    if (ctx.identity.keypair) |kp| {
-        const pk = kp.publicKeyBytes();
-        cs_line = try std.fmt.allocPrint(alloc, "Callsign: {s}  Key: {x:0>2}{x:0>2}{x:0>2}{x:0>2}\u{2026}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
-            ctx.connection.callsign_input.value.items,
-            pk[0],
-            pk[1],
-            pk[2],
-            pk[3],
-            pk[28],
-            pk[29],
-            pk[30],
-            pk[31],
-        });
-        cs_owned = true;
-    } else {
-        cs_line = try std.fmt.allocPrint(alloc, "Callsign: {s}  Key: none", .{ctx.connection.callsign_input.value.items});
-        cs_owned = true;
-    }
-    defer if (cs_owned) alloc.free(cs_line);
-    return info_style.render(alloc, cs_line);
 }
 
 /// Ask the server for our own user info when it isn't cached yet (the

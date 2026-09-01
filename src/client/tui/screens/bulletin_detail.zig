@@ -119,11 +119,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
         }
 
         // --- Title (outside the box, above it) ---
-        var title_style = zz.Style{};
-        title_style = title_style.bold(true);
-        title_style = title_style.fg(zz.Color.cyan);
-        title_style = title_style.inline_style(true);
-        const styled_title = try title_style.render(alloc, mut_rec.title);
+        const styled_title = try render.title_cyan.render(alloc, mut_rec.title);
         defer alloc.free(styled_title);
 
         // --- Post 0: original bulletin ---
@@ -307,9 +303,7 @@ fn renderPost(
     }
     defer if (sidebar_owned) alloc.free(sidebar_content);
 
-    var sidebar_style = zz.Style{};
-    sidebar_style = sidebar_style.width(@intCast(sidebar_width));
-    sidebar_style = sidebar_style.fg(if (is_original) zz.Color.cyan else zz.Color.gray(14));
+    const sidebar_style = (zz.Style{}).width(@intCast(sidebar_width)).fg(if (is_original) zz.Color.cyan else zz.Color.gray(14));
     const sidebar = try sidebar_style.render(alloc, sidebar_content);
     defer alloc.free(sidebar);
 
@@ -325,15 +319,13 @@ fn renderPost(
     defer alloc.free(joined);
 
     // --- Wrap in a bordered box ---
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    if (is_focused) {
-        box_style = box_style.borderForeground(zz.Color.yellow);
-    } else {
-        box_style = box_style.borderForeground(if (is_original) zz.Color.cyan else zz.Color.gray(14));
-    }
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(body_width);
+    const border_color = if (is_focused)
+        zz.Color.yellow
+    else if (is_original)
+        zz.Color.cyan
+    else
+        zz.Color.gray(14);
+    const box_style = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(border_color).paddingAll(1).width(body_width);
     return box_style.render(alloc, joined);
 }
 

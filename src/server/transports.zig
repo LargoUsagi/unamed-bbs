@@ -31,6 +31,7 @@ const tcp_mod = @import("bbs").tcp;
 const meshcore_mod = @import("bbs").meshcore;
 const protocol = @import("bbs").protocol;
 const messaging = @import("bbs").messaging;
+const time = @import("bbs").time;
 
 const routing = @import("routing.zig");
 const retransmit_cache_mod = @import("retransmit_cache.zig");
@@ -56,10 +57,6 @@ pub const TransportKind = enum {
     /// Outbound MeshCore companion radio on a local serial port.
     meshcore,
 };
-
-fn nowSec(io: Io) u64 {
-    return @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
-}
 
 /// FrameObserver callback wired by `ServerTransport.cacheObserver`: stamps
 /// the transport's last-transmit time, then hands the frame to its
@@ -142,7 +139,7 @@ pub const ServerTransport = struct {
     /// Stamp the wall-clock second of the most recent successful
     /// transmission on this transport.
     fn noteTx(self: *ServerTransport) void {
-        self.last_tx_sec = nowSec(self.cache.io);
+        self.last_tx_sec = time.nowSecs(self.cache.io);
     }
 
     /// Send without the cache observer. Used for NAK retransmits where the
@@ -361,7 +358,7 @@ pub fn wrapAgwpe(
         .port = port,
         .transport = conn.asTransport(),
         .cache = .{ .io = io },
-        .last_tx_sec = nowSec(io),
+        .last_tx_sec = time.nowSecs(io),
     };
 }
 
@@ -385,7 +382,7 @@ pub fn wrapTcp(
         .port = port,
         .transport = conn.asTransport(),
         .cache = .{ .io = io },
-        .last_tx_sec = nowSec(io),
+        .last_tx_sec = time.nowSecs(io),
     };
 }
 
@@ -410,7 +407,7 @@ pub fn wrapMeshcore(
         .port = port,
         .transport = conn.asTransport(),
         .cache = .{ .io = io },
-        .last_tx_sec = nowSec(io),
+        .last_tx_sec = time.nowSecs(io),
     };
 }
 

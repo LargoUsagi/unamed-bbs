@@ -107,6 +107,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const header = try state.top_bar.view(alloc, ctx);
     defer alloc.free(header);
     const form_view = try state.form.view(alloc);
+    defer alloc.free(form_view);
 
     const help = try render.renderHelp(
         alloc,
@@ -114,9 +115,9 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     );
 
     const term_height: usize = zz_ctx.height;
-    const header_h = countLines(header);
-    const form_h = countLines(form_view);
-    const help_h = countLines(help);
+    const header_h = render.countLines(header);
+    const form_h = render.countLines(form_view);
+    const help_h = render.countLines(help);
     const gaps: usize = 4;
     const log_box_overhead: usize = 4;
     const min_log_content: usize = 3;
@@ -126,11 +127,8 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     else
         min_log_content;
 
-    var log_title_style = zz.Style{};
-    log_title_style = log_title_style.bold(true);
-    log_title_style = log_title_style.fg(zz.Color.cyan);
-    log_title_style = log_title_style.inline_style(true);
-    const log_title = try log_title_style.render(alloc, "Messages");
+    const log_title = try render.title_cyan.render(alloc, "Messages");
+    defer alloc.free(log_title);
 
     const log_box = try renderChatLog(alloc, ctx, log_content_h, log_box_width);
     defer alloc.free(log_box);
@@ -213,7 +211,7 @@ fn renderChatLog(alloc: std.mem.Allocator, ctx: *app.AppContext, log_content_h: 
     // Pad the log content with empty lines so the box fills the available
     // vertical space.
     {
-        const current_lines = countLines(log_buf.items);
+        const current_lines = render.countLines(log_buf.items);
         if (current_lines < log_content_h) {
             var pad: usize = log_content_h - current_lines;
             while (pad > 0) : (pad -= 1) {
@@ -222,22 +220,8 @@ fn renderChatLog(alloc: std.mem.Allocator, ctx: *app.AppContext, log_content_h: 
         }
     }
 
-    var log_box_style = zz.Style{};
-    log_box_style = log_box_style.borderAll(zz.Border.rounded);
-    log_box_style = log_box_style.borderForeground(zz.Color.cyan);
-    log_box_style = log_box_style.paddingAll(1);
-    log_box_style = log_box_style.width(log_box_width);
+    const log_box_style = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.cyan).paddingAll(1).width(log_box_width);
     return log_box_style.render(alloc, log_buf.items);
-}
-
-fn countLines(s: []const u8) usize {
-    if (s.len == 0) return 0;
-    var n: usize = 1;
-    for (s) |c| {
-        if (c == '\n') n += 1;
-    }
-    if (s[s.len - 1] == '\n') n -= 1;
-    return n;
 }
 
 pub const vtable = zz.Screen.VTable{

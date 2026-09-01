@@ -36,16 +36,11 @@ pub const AvatarPreview = struct {
         const avatar = try avatar_widget.render(allocator, self.avatar_text);
         defer allocator.free(avatar);
 
-        var style = zz.Style{};
-        style = style.borderAll(zz.Border.rounded);
-        style = style.borderForeground(if (self.focused) zz.Color.cyan else zz.Color.gray(12));
-        style = style.paddingAll(1);
-        const boxed = try style.render(allocator, avatar);
+        const box_style = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(if (self.focused) zz.Color.cyan else zz.Color.gray(12)).paddingAll(1);
+        const boxed = try box_style.render(allocator, avatar);
         defer allocator.free(boxed);
 
-        var hint_style = zz.Style{};
-        hint_style = hint_style.fg(if (self.focused) zz.Color.cyan else zz.Color.gray(12));
-        hint_style = hint_style.inline_style(true);
+        const hint_style = (zz.Style{}).fg(if (self.focused) zz.Color.cyan else zz.Color.gray(12)).inline_style(true);
         const hint = try hint_style.render(allocator, if (self.focused) "Enter: edit" else "");
         defer allocator.free(hint);
 

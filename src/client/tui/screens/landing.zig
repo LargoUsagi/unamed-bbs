@@ -109,6 +109,7 @@ fn view(ptr: *anyopaque, zz_ctx: *const zz.Context, alloc: std.mem.Allocator) an
     const top_bar = try state.top_bar.view(alloc, ctx);
     defer alloc.free(top_bar);
     const form_view = try state.form.view(alloc);
+    defer alloc.free(form_view);
 
     const help = try render.renderHelp(
         alloc,
@@ -250,11 +251,7 @@ fn renderMotdSection(alloc: std.mem.Allocator, ctx: *app.AppContext, content_wid
     const motd_rendered = md.render(alloc, motd) catch try alloc.dupe(u8, motd);
     defer alloc.free(motd_rendered);
 
-    var box_style = zz.Style{};
-    box_style = box_style.borderAll(zz.Border.rounded);
-    box_style = box_style.borderForeground(zz.Color.cyan);
-    box_style = box_style.paddingAll(1);
-    box_style = box_style.width(box_width);
+    const box_style = (zz.Style{}).borderAll(zz.Border.rounded).borderForeground(zz.Color.cyan).paddingAll(1).width(box_width);
     return box_style.render(alloc, motd_rendered);
 }
 

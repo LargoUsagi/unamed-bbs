@@ -4,7 +4,9 @@
 //! implementation lives in the `tui/` directory:
 //!   - `types.zig` — shared types, constants, and helpers
 //!   - `cli.zig` — `TuiOverrides` (CLI flag pre-fill values)
-//!   - `render.zig` — styled status indicators and the `fillTerminal` layout helper
+//!   - `render.zig` — shared style presets, styled status indicators, the
+//!     key-fingerprint formatters, and the `fillTerminal` / `countLines`
+//!     layout helpers
 //!   - `widgets/button.zig` — simple `zz.Form`-compatible button widget
 //!   - `model.zig` — central `Model` struct (init/update/deinit) and `run()`
 //!   - `app.zig` — `AppContext` (shared application state and lifecycle)

@@ -754,14 +754,7 @@ test "ConnectionManager.init restores TCP host from DB without corruption" {
 
     var mgr: ConnectionManager = undefined;
     init(&mgr, allocator, &store, .{});
-    defer {
-        mgr.host_input.deinit();
-        mgr.port_input.deinit();
-        mgr.kport_input.deinit();
-        mgr.tcp_host_input.deinit();
-        mgr.tcp_port_input.deinit();
-        mgr.callsign_input.deinit();
-    }
+    defer deinit(&mgr);
 
     try std.testing.expectEqualStrings("10.10.2.198", mgr.tcp_host_input.value.items);
     try std.testing.expectEqualStrings("9000", mgr.tcp_port_input.value.items);
@@ -776,14 +769,7 @@ test "ConnectionManager.init restores AGWPE host from DB without corruption" {
 
     var mgr: ConnectionManager = undefined;
     init(&mgr, allocator, &store, .{});
-    defer {
-        mgr.host_input.deinit();
-        mgr.port_input.deinit();
-        mgr.kport_input.deinit();
-        mgr.tcp_host_input.deinit();
-        mgr.tcp_port_input.deinit();
-        mgr.callsign_input.deinit();
-    }
+    defer deinit(&mgr);
 
     try std.testing.expectEqualStrings("10.10.2.114", mgr.host_input.value.items);
     try std.testing.expectEqualStrings("8000", mgr.port_input.value.items);
